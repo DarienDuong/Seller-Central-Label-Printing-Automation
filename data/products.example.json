@@ -1,0 +1,14 @@
+[
+  {
+    "sku": "EXAMPLE-SKU-001",
+    "asin": "B000000000",
+    "title": "Example product — 12 oz",
+    "quantity": 30,
+    "format": "30-up"
+  },
+  {
+    "sku": "EXAMPLE-SKU-002",
+    "title": "Example product — variety pack",
+    "quantity": 6
+  }
+]

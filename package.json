@@ -1,0 +1,26 @@
+{
+  "name": "seller-central-label-printing",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Playwright automation for printing product labels from Amazon Seller Central.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "login": "tsx src/cli.ts login",
+    "print": "tsx src/cli.ts print",
+    "list": "tsx src/cli.ts list",
+    "typecheck": "tsc --noEmit",
+    "postinstall": "playwright install chromium"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "playwright": "^1.49.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
