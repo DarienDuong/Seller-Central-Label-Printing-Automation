@@ -19,7 +19,11 @@ export async function login(): Promise<void> {
   const { page } = session;
 
   log.info('Opening Seller Central sign-in…');
-  await page.goto(scUrl('/home'), { waitUntil: 'domcontentloaded' });
+  // Deliberately bypass scUrl() here: appending mons_sel_dir_mcid/mons_sel_mkid
+  // before a session exists makes Amazon's sign-in redirect reject the URL
+  // ("Invalid request URL from client"). Account/marketplace is picked
+  // manually in the UI after signing in.
+  await page.goto(`${config.baseUrl}/home`, { waitUntil: 'domcontentloaded' });
 
   log.info('');
   log.info('  Sign in manually in the browser window that just opened.');
