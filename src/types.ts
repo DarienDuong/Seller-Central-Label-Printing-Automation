@@ -1,11 +1,17 @@
-/** Paper layouts Seller Central offers on the Print Item Labels page. */
+/**
+ * Paper/Sticker Type presets Seller Central offers under "Standard formats" on
+ * the Print Item Labels page (/fba/printitemlabel/), plus 'thermal' for the
+ * "Thermal printing" mode, which swaps the preset dropdown for freeform
+ * Width (mm) / Height (mm) fields instead of a fixed set of sizes.
+ */
 export type LabelFormat =
-  | '30-up'
-  | '24-up'
-  | '21-up'
-  | '27-up'
-  | 'thermal-1x2'
-  | 'thermal-2x1';
+  | 'ItemLabel_Letter_30' // 30-up, 1" x 2-5/8", US Letter
+  | 'ItemLabel_A4_27' // 27-up, 63.5 x 29.6 mm, A4
+  | 'ItemLabel_A4_24' // 24-up, 66 x 33.9 mm, A4
+  | 'ItemLabel_A4_21' // 21-up, 63.5 x 38.1 mm, A4
+  | 'ItemLabel_A4_40_52x29' // 40-up, 52.5 x 29.7 mm, A4
+  | 'ItemLabel_A4_44_48x25' // 44-up, 25.4 x 48.5 mm, A4
+  | 'thermal';
 
 /** One line item in a print job: what to label and how many labels to make. */
 export interface LabelRequest {
@@ -19,6 +25,9 @@ export interface LabelRequest {
   quantity: number;
   /** Overrides DEFAULT_LABEL_FORMAT for this line item. */
   format?: LabelFormat;
+  /** Only used when format is 'thermal'. Seller Central defaults to 57 x 32 if omitted. */
+  thermalWidthMm?: number;
+  thermalHeightMm?: number;
 }
 
 /** Result of processing a single LabelRequest. */

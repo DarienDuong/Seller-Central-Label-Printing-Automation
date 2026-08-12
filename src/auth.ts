@@ -37,6 +37,15 @@ export async function login(): Promise<void> {
   while (Date.now() < deadline) {
     if (await isSignedIn(page)) {
       log.done('Signed-in session detected.');
+
+      // Deep-linked feature pages (e.g. /fba/printitemlabel/) redirect to
+      // Amazon's account-switcher interstitial on a session with no active
+      // marketplace selection — /home alone doesn't trigger it. Force that
+      // resolution now, once, so it's captured in the saved storage state
+      // and every later automated run skips straight past it.
+      await page.goto(`${config.baseUrl}/fba/printitemlabel/`, { waitUntil: 'domcontentloaded' });
+      await resolveAccountSwitcher(page);
+
       await saveStorageState(session.context);
       await session.close();
       return;
@@ -49,23 +58,48 @@ export async function login(): Promise<void> {
 }
 
 /**
+ * Handle Amazon's "Select an account" interstitial (/account-switcher/...).
+ * Verified 2026-08-12: it doesn't accept mons_sel_dir_mcid/mons_sel_mkid query
+ * params the way classic Seller Central URLs do — a session with no active
+ * marketplace selection gets redirected here on deep links instead. Picking
+ * a marketplace and confirming sets a session cookie, so this only needs to
+ * fire once per saved session.
+ */
+async function resolveAccountSwitcher(page: Page): Promise<void> {
+  if (!page.url().includes('/account-switcher/')) return;
+  log.info(`Account switcher interstitial — selecting "${config.marketplaceName}"…`);
+  await page.getByRole('button', { name: config.marketplaceName, exact: true }).click();
+  await page.getByRole('button', { name: 'Select account', exact: true }).click();
+  await page.waitForLoadState('domcontentloaded').catch(() => {});
+}
+
+/**
  * Heuristic session check. Amazon redirects unauthenticated requests to
  * /ap/signin, so a landed Seller Central URL plus the account nav is a good
  * enough signal without hitting an API.
+ *
+ * Verified 2026-08-12: #sc-search-field (the top-nav search box) is present
+ * on every Seller Central page once signed in. It's client-rendered — the
+ * page shows a loading spinner right after domcontentloaded — so this waits
+ * for it rather than checking instantly.
  */
 export async function isSignedIn(page: Page): Promise<boolean> {
   const url = page.url();
   if (url.includes('/ap/signin') || url.includes('/ap/mfa')) return false;
   if (!url.startsWith(config.baseUrl)) return false;
 
-  // TODO(selectors): confirm against the live account and tighten if flaky.
-  const marker = page.locator('#partner-navigation, [data-testid="sc-nav-root"], #sc-content-container');
-  return (await marker.count()) > 0;
+  const marker = page.locator('#sc-search-field, #sc-content-container, #partner-navigation, [data-testid="sc-nav-root"]');
+  return marker
+    .first()
+    .waitFor({ state: 'attached', timeout: 10_000 })
+    .then(() => true)
+    .catch(() => false);
 }
 
 /** Navigate somewhere in Seller Central, failing loudly if the session died. */
 export async function gotoAuthed(page: Page, path: string, params?: Record<string, string>): Promise<void> {
   await page.goto(scUrl(path, params), { waitUntil: 'domcontentloaded' });
+  await resolveAccountSwitcher(page);
   if (!(await isSignedIn(page))) {
     throw new Error('Not signed in (or session expired). Run `npm run login` and retry.');
   }

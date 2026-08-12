@@ -22,8 +22,10 @@ structured input (`--file products.json`) and can emit structured output
 nvm use && npm install && cp .env.example .env
 ```
 
-Fill in `.env` — at minimum `SC_MERCHANT_ID` and `SC_MARKETPLACE_ID`, which you
-can copy out of any Seller Central URL after switching to the right account.
+The defaults in `.env.example` work as-is for a single US account. If your
+account's marketplace shows under a different name in Amazon's account-switcher
+screen (multiple marketplaces, non-US, etc.), set `SC_MARKETPLACE_NAME` to
+match it exactly.
 
 ## Sign in once
 
@@ -53,7 +55,7 @@ npm run print -- --file data/products.json
 selectors are verified. Without a `PRINTER_NAME` in `.env`, every run behaves
 like a dry run anyway.
 
-Other flags: `--format 30-up`, `--headed`, `--json`, `--printers`, `--help`.
+Other flags: `--format ItemLabel_Letter_30` (or `thermal`), `--headed`, `--json`, `--printers`, `--help`.
 
 ## Inspect inventory
 
@@ -73,23 +75,33 @@ npm run list -- --search "coffee"
 | [src/tasks/printLabels.ts](src/tasks/printLabels.ts) | Batch flow: search → label → save → print |
 | [src/printer.ts](src/printer.ts) | CUPS `lp` handoff |
 
-## Next step: verify the selectors
+## Selector status
 
-Every locator in [src/pages/inventoryPage.ts](src/pages/inventoryPage.ts) is
-marked `TODO(selectors)`. Seller Central's DOM varies by account, marketplace,
-and A/B bucket, so these have to be confirmed against the real UI rather than
-guessed. The fastest path:
+Verified 2026-08-12 against a live account. The print flow bypasses the
+Manage Inventory grid entirely — Seller Central exposes a dedicated page,
+`/fba/printitemlabel/?mSku.0=<sku>&mSku.1=<sku>...`, that accepts a batch of
+SKUs directly in the URL query string and renders one row per SKU with its
+own quantity field. `printLabels` groups requests by format and does one
+page load + one Print click per group, producing one PDF per group.
+
+A few things worth knowing if selectors ever need re-verifying (Seller
+Central's DOM varies by account/A-B bucket):
+- The grid and the print-labels page are both built from shadow-DOM Katal
+  (`kat-*`) web components — Playwright's default CSS/text locators pierce
+  open shadow roots automatically, no special handling needed.
+- Unknown/invalid SKUs are silently dropped from the print-labels page (no
+  error) — `renderedSkus()` diffs requested vs. rendered SKUs to detect them.
+- "Standard formats" offers a fixed Paper/Sticker Type dropdown (30/27/24/21/40/44-up).
+  "Thermal printing" replaces that dropdown with freeform Width (mm) / Height (mm)
+  fields (Amazon's own default is 57 × 32mm) — there's no fixed thermal preset.
+- `Manage Inventory`'s `list` command scraping (`listVisible`) only has the
+  SKU column confirmed; title/available columns are still a guess.
+
+To re-verify after a UI change:
 
 ```bash
 BROWSER_MODE=headed SLOW_MO=400 npm run print -- --sku YOUR-SKU --qty 1 --dry-run
 ```
-
-Watch where it stalls, grab the real locator with Playwright's inspector
-(`PWDEBUG=1`), and replace the placeholder. Prefer role + visible text over
-generated class names — Amazon rotates those.
-
-Also confirm `FORMAT_LABELS` matches the exact option strings in the live
-label-format dropdown.
 
 ## Notes
 

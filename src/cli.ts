@@ -22,7 +22,7 @@ Options
   --sku <sku>          SKU to label (repeatable)
   --qty <n>            Labels per SKU (default 1; pairs with the preceding --sku)
   --file <path>        JSON array of { sku, quantity, format?, title? }
-  --format <fmt>       ${'Override label layout, e.g. 30-up, thermal-2x1'}
+  --format <fmt>       ${'Override label layout, e.g. ItemLabel_Letter_30, thermal'}
   --dry-run            Download the PDFs, never send to the printer
   --headed             Force a visible browser window
   --json               Print machine-readable results (for skill use)
