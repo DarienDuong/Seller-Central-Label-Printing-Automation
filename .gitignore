@@ -5,3 +5,8 @@ output/
 traces/
 *.log
 .DS_Store
+
+# Real batch files copied from the example (real SKUs/quantities, not secrets
+# but not repo content either) — keep products.example.json tracked.
+data/*.json
+!data/products.example.json

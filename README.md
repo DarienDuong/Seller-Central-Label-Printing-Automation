@@ -49,22 +49,53 @@ Seller Central session.
 
 ## Print labels
 
-```bash
-npm run print -- --sku ABC-123 --qty 30 --dry-run
-```
+One SKU:
 
 ```bash
-npm run print -- --file data/products.json
+npm run print -- --sku ABC-123 --qty 30 --dry-run
 ```
 
 `--dry-run` downloads the PDF to `output/` without sending it to a printer —
 good for a first run on unfamiliar SKUs. Without a `PRINTER_NAME` in `.env`,
 every run behaves like a dry run regardless.
 
+### Multiple SKUs
+
 SKUs passed in the same run that share a label format are combined into a
 single PDF — this mirrors how Seller Central's own Print Item Labels page
 batches SKUs, so printing a whole shipment's worth of labels is one PDF, not
-one per SKU.
+one per SKU. Multiple SKUs with *different* formats still print in one run;
+each format just gets its own PDF.
+
+Repeat `--sku`/`--qty` for a handful of SKUs on the command line — each `--qty`
+applies to the `--sku` immediately before it:
+
+```bash
+npm run print -- --sku ABC-123 --qty 30 --sku XYZ-789 --qty 6 --dry-run
+```
+
+For a whole shipment, put them in a JSON file instead — copy the example and
+edit it:
+
+```bash
+cp data/products.example.json data/products.json
+```
+
+```json
+[
+  { "sku": "ABC-123", "quantity": 30 },
+  { "sku": "XYZ-789", "quantity": 6 },
+  { "sku": "DEF-456", "quantity": 12, "format": "thermal" }
+]
+```
+
+`format` and `title` are optional per SKU — `title` is just for the log
+output, and `format` overrides `DEFAULT_LABEL_FORMAT` for that one SKU (the
+`thermal` one above prints as its own separate PDF from the other two).
+
+```bash
+npm run print -- --file data/products.json --dry-run
+```
 
 Flags:
 
@@ -119,11 +150,19 @@ Central's DOM varies by account/A-B bucket):
   open shadow roots automatically, no special handling needed.
 - Unknown/invalid SKUs are silently dropped from the print-labels page (no
   error) — `renderedSkus()` diffs requested vs. rendered SKUs to detect them.
+- Both formats have been checked against the actual generated PDF, not just
+  "no error thrown": Standard produces the requested label count laid out on
+  the chosen paper size with a real FNSKU barcode; Thermal produces one
+  label per page sized exactly to the requested Width/Height (mm). Runs
+  headless the same as headed.
 - "Standard formats" offers a fixed Paper/Sticker Type dropdown (30/27/24/21/40/44-up).
   "Thermal printing" replaces that dropdown with freeform Width (mm) / Height (mm)
   fields (Amazon's own default is 57 × 32mm) — there's no fixed thermal preset.
-- `Manage Inventory`'s `list` command scraping (`listVisible`) only has the
-  SKU column confirmed; title/available columns are still a guess.
+- `Manage Inventory` rows have no fixed column layout in their text — "Out of
+  stock" rows carry an extra "Replenish inventory" action line that shifts
+  everything after it. `listVisible()` locates SKU/ASIN/title/available by
+  the label line right before/after them (e.g. the line after "SKU"), not by
+  position, so it holds up across listing statuses.
 
 To re-verify after a UI change:
 
