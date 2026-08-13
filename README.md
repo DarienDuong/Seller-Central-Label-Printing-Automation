@@ -1,9 +1,8 @@
 # Seller Central Label Printing Automation
 
 Playwright automation that generates and prints product (FNSKU/item) labels from
-Amazon Seller Central. This is the **boilerplate**: the structure, session
-handling, CLI, and print flow are in place; the Seller Central selectors are
-first-guess placeholders that need one pass against the live account.
+Amazon Seller Central. The flow is verified end-to-end against a live account —
+see [How it works](#how-it-works) for what that covers.
 
 Designed to be wrapped as a Claude Code plugin skill later — the CLI takes
 structured input (`--file products.json`) and can emit structured output
@@ -11,8 +10,7 @@ structured input (`--file products.json`) and can emit structured output
 
 ## Requirements
 
-- Node **18+** (this machine's default `node` is 16 — use `nvm use 22`, an
-  `.nvmrc` is included)
+- Node **22** (an `.nvmrc` is included — run `nvm use`)
 - A Seller Central account with FBA/label permissions
 - Optional: a CUPS printer for auto-printing (`lpstat -p`)
 
@@ -22,10 +20,13 @@ structured input (`--file products.json`) and can emit structured output
 nvm use && npm install && cp .env.example .env
 ```
 
-The defaults in `.env.example` work as-is for a single US account. If your
-account's marketplace shows under a different name in Amazon's account-switcher
-screen (multiple marketplaces, non-US, etc.), set `SC_MARKETPLACE_NAME` to
-match it exactly.
+`npm install` also downloads a Chromium browser for Playwright (via
+`postinstall`) — the first install may take a minute.
+
+The defaults in `.env.example` work as-is for a single US account. The only
+value worth checking is `SC_MARKETPLACE_NAME` — it must exactly match the
+marketplace name shown in Amazon's account-switcher screen (see below), which
+is `United States` by default.
 
 ## Sign in once
 
@@ -33,10 +34,15 @@ match it exactly.
 npm run login
 ```
 
-A real Chromium window opens. **You** sign in — the script never types
-credentials and never handles OTP codes. Once it detects a live session it saves
-cookies + localStorage to `.auth/seller-central.json` and closes. Every later run
-replays that file. Re-run this when a run reports "session expired".
+A real Chromium window opens. **You** sign in — the script never sees or types
+your password, and never handles OTP / 2-step verification. Once it detects a
+live session, it also clicks through Amazon's "Select an account"
+interstitial if one appears (using `SC_MARKETPLACE_NAME`), then saves the
+session to `.auth/seller-central.json` and closes. Every later run replays
+that file — you shouldn't need a browser window again until the session
+expires.
+
+Re-run this whenever a run reports "Not signed in (or session expired)."
 
 `.auth/` is gitignored. Treat it like a password: anyone with that file has your
 Seller Central session.
@@ -51,11 +57,33 @@ npm run print -- --sku ABC-123 --qty 30 --dry-run
 npm run print -- --file data/products.json
 ```
 
-`--dry-run` downloads the PDF to `output/` and stops there — use it until the
-selectors are verified. Without a `PRINTER_NAME` in `.env`, every run behaves
-like a dry run anyway.
+`--dry-run` downloads the PDF to `output/` without sending it to a printer —
+good for a first run on unfamiliar SKUs. Without a `PRINTER_NAME` in `.env`,
+every run behaves like a dry run regardless.
 
-Other flags: `--format ItemLabel_Letter_30` (or `thermal`), `--headed`, `--json`, `--printers`, `--help`.
+SKUs passed in the same run that share a label format are combined into a
+single PDF — this mirrors how Seller Central's own Print Item Labels page
+batches SKUs, so printing a whole shipment's worth of labels is one PDF, not
+one per SKU.
+
+Flags:
+
+| Flag | Meaning |
+| --- | --- |
+| `--sku <sku>` / `--qty <n>` | Repeatable pair — quantity applies to the `--sku` right before it |
+| `--file <path>` | JSON array of `{ sku, quantity, format?, title? }` — see [data/products.example.json](data/products.example.json) |
+| `--format <fmt>` | `ItemLabel_Letter_30` (default), `ItemLabel_A4_27`, `ItemLabel_A4_24`, `ItemLabel_A4_21`, `ItemLabel_A4_40_52x29`, `ItemLabel_A4_44_48x25`, or `thermal` |
+| `--dry-run` | Download only, never send to the printer |
+| `--headed` | Force a visible browser window |
+| `--json` | Machine-readable output (for skill use) |
+| `--printers` | List CUPS printers and exit |
+| `--help` | Show usage |
+
+## Where the PDFs go
+
+Downloaded labels land in `output/` (`OUTPUT_DIR` in `.env`), one file per
+format group per run: `labels_<SKUs>_<timestamp>.pdf`. `output/` is
+gitignored.
 
 ## Inspect inventory
 
@@ -72,10 +100,10 @@ npm run list -- --search "coffee"
 | [src/browser.ts](src/browser.ts) | Chromium launch + saved-session context |
 | [src/auth.ts](src/auth.ts) | Interactive login, session detection |
 | [src/pages/inventoryPage.ts](src/pages/inventoryPage.ts) | Manage Inventory + Print Item Labels page object |
-| [src/tasks/printLabels.ts](src/tasks/printLabels.ts) | Batch flow: search → label → save → print |
+| [src/tasks/printLabels.ts](src/tasks/printLabels.ts) | Batch flow: group by format → print-labels page → set quantities → submit → save |
 | [src/printer.ts](src/printer.ts) | CUPS `lp` handoff |
 
-## Selector status
+## How it works
 
 Verified 2026-08-12 against a live account. The print flow bypasses the
 Manage Inventory grid entirely — Seller Central exposes a dedicated page,
