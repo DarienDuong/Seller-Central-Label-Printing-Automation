@@ -4,7 +4,7 @@
     "asin": "B000000000",
     "title": "Example product — 12 oz",
     "quantity": 30,
-    "format": "30-up"
+    "format": "ItemLabel_Letter_30"
   },
   {
     "sku": "EXAMPLE-SKU-002",
