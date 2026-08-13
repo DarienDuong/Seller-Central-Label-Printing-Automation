@@ -1,34 +1,33 @@
-import type { Download, Locator, Page } from 'playwright';
+import type { Download, Page } from 'playwright';
 import { gotoAuthed } from '../auth.js';
-import { log } from '../logger.js';
 import type { InventoryItem, LabelFormat } from '../types.js';
 
 /**
  * Page object for Manage Inventory and the Print Item Labels flow.
  *
- * ⚠️ Seller Central's DOM is unstable and differs by account, marketplace, and
- * A/B bucket. Every selector below is a first guess captured from the public
- * UI — verify each one against the real account (run headed with SLOW_MO set)
- * and replace it with something anchored to visible text or a data-* attribute
- * rather than a generated class name.
+ * Verified 2026-08-12 against a live account. Seller Central's inventory grid
+ * (Manage All Inventory) is a heavily shadow-DOM'd Katal ("kat-*") component
+ * with no real <table>/<tr> elements, so it's only used here for the `list`
+ * command. Printing labels never touches that grid: Seller Central exposes a
+ * dedicated page, /fba/printitemlabel/?mSku.0=<sku>&mSku.1=<sku>..., that
+ * accepts a batch of SKUs directly in the URL and renders one row per SKU
+ * with its own quantity field — far more reliable than driving the grid's
+ * row action menu. Unknown/invalid SKUs are silently dropped from that page
+ * (no error), so callers must diff requested vs. rendered SKUs to detect
+ * "not found".
  */
 export class InventoryPage {
   constructor(private readonly page: Page) {}
 
   /** Manage Inventory, filtered to nothing. */
   async open(): Promise<void> {
-    await gotoAuthed(this.page, '/inventory');
+    await gotoAuthed(this.page, '/myinventory/inventory');
     await this.page.waitForLoadState('networkidle').catch(() => {});
   }
 
   /** Type a SKU/ASIN into the inventory search box and wait for the grid. */
   async search(query: string): Promise<void> {
-    // TODO(selectors): verify — search box has changed names several times.
-    const box = this.page
-      .getByPlaceholder(/search/i)
-      .or(this.page.locator('#myitable-search-input, input[name="searchText"]'))
-      .first();
-
+    const box = this.page.getByPlaceholder('Search SKU, Title/Keyword, FNSKU, ASIN, UPC/EAN');
     await box.click();
     await box.fill(query);
     await box.press('Enter');
@@ -36,83 +35,91 @@ export class InventoryPage {
   }
 
   /** The grid row matching a SKU exactly. */
-  row(sku: string): Locator {
-    // TODO(selectors): verify — prefer a row-scoped locator over nth-child.
-    return this.page
-      .locator('tr, [role="row"]')
-      .filter({ hasText: sku })
-      .first();
+  row(sku: string) {
+    return this.page.locator('[class*="tableContentRow"]').filter({ hasText: sku }).first();
   }
 
   async rowExists(sku: string): Promise<boolean> {
     return (await this.row(sku).count()) > 0;
   }
 
-  /** Scrape the visible page of the grid — backs the `list` command. */
+  /**
+   * Scrape the visible page of the grid — backs the `list` command.
+   * TODO(selectors): only SKU is confirmed reliable (the row's id === the SKU
+   * text). Title/available columns still need a verification pass.
+   */
   async listVisible(): Promise<InventoryItem[]> {
-    // TODO(selectors): map real column indexes once the grid is confirmed.
-    const rows = this.page.locator('[role="row"]');
+    const rows = this.page.locator('[class*="tableContentRow"]');
     const count = await rows.count();
     const items: InventoryItem[] = [];
 
     for (let i = 0; i < count; i++) {
-      const cells = rows.nth(i).locator('[role="cell"], td');
-      if ((await cells.count()) < 3) continue;
-      const text = async (n: number) => (await cells.nth(n).innerText().catch(() => '')).trim();
-      const sku = await text(2);
-      if (!sku) continue;
-      items.push({ sku, title: await text(1), available: await text(await cells.count() - 1) });
+      const text = (await rows.nth(i).innerText().catch(() => '')).trim();
+      const sku = text.split('\n').find((line) => /^[A-Z0-9][A-Z0-9-]{4,}$/i.test(line.trim()));
+      if (sku) items.push({ sku: sku.trim() });
     }
     return items;
   }
 
   /**
-   * Open the row's action menu and choose "Print item labels".
-   * Returns once the label form is visible (it may be a modal or a new page).
+   * Navigate straight to the Print Item Labels page for a batch of SKUs.
+   * One page covers the whole batch: shared format/paper controls, one
+   * quantity field per SKU, one Print click, one PDF.
    */
-  async openPrintLabels(sku: string): Promise<void> {
-    const row = this.row(sku);
-    if ((await row.count()) === 0) throw new Error(`SKU not found in grid: ${sku}`);
+  async openPrintLabelsPage(skus: string[]): Promise<void> {
+    const params: Record<string, string> = {};
+    skus.forEach((sku, i) => {
+      params[`mSku.${i}`] = sku;
+    });
+    await gotoAuthed(this.page, '/fba/printitemlabel/', params);
+    // The form is a client-rendered Katal web component tree — wait for the
+    // submit button (page chrome, present regardless of how many SKUs matched)
+    // rather than racing evaluateAll() against domcontentloaded.
+    await this.page.locator('kat-button[label="Print Item Labels"]').waitFor({ state: 'attached' });
+  }
 
-    // TODO(selectors): the caret is an unlabeled button in the Edit split-button.
-    await row.getByRole('button', { name: /edit|actions/i }).first().click();
-    await this.page.getByRole('menuitem', { name: /print item labels/i })
-      .or(this.page.getByRole('link', { name: /print item labels/i }))
+  /** SKUs Seller Central actually rendered a row for (unknown SKUs are dropped, not errored). */
+  async renderedSkus(): Promise<Set<string>> {
+    // kat-button (page chrome) attaches immediately; the per-SKU rows are an
+    // async fetch on top of that, so give them a bounded wait too. A true
+    // zero-matches batch just times out here and returns an empty set.
+    await this.page
+      .locator('kat-input[type="number"][id]')
       .first()
-      .click();
+      .waitFor({ state: 'attached', timeout: 10_000 })
+      .catch(() => {});
 
-    await this.labelForm().waitFor({ state: 'visible' });
+    const ids = await this.page
+      .locator('kat-input[type="number"][id]')
+      .evaluateAll((els) => els.map((el) => el.id).filter(Boolean));
+    return new Set(ids);
   }
 
-  /** The Print Item Labels form, whether it renders inline or in a dialog. */
-  labelForm(): Locator {
-    // TODO(selectors): verify container.
-    return this.page.locator('[role="dialog"], form#label-print-form, #print-labels').first();
-  }
-
-  /** Set how many labels to generate. */
-  async setQuantity(quantity: number): Promise<void> {
-    const input = this.labelForm()
-      .getByLabel(/number of labels|quantity/i)
-      .or(this.labelForm().locator('input[type="number"], input[name*="quantity" i]'))
-      .first();
+  /** Set how many labels to generate for one SKU already on the print-labels page. */
+  async setQuantity(sku: string, quantity: number): Promise<void> {
+    const input = this.page.locator(`kat-input[id="${escapeAttr(sku)}"] input`);
     await input.fill(String(quantity));
   }
 
-  /** Choose the paper/thermal layout. */
-  async setFormat(format: LabelFormat): Promise<void> {
-    const select = this.labelForm()
-      .getByLabel(/label (type|size)|paper/i)
-      .or(this.labelForm().locator('select'))
-      .first();
+  /** Choose Standard vs. Thermal and the specific paper/size. */
+  async setFormat(format: LabelFormat, thermal?: { widthMm?: number; heightMm?: number }): Promise<void> {
+    const isThermal = format === 'thermal';
+    await this.chooseDropdownOption('Choose printing format', isThermal ? 'Thermal printing' : 'Standard formats');
 
-    if ((await select.count()) === 0) {
-      log.warn(`No label-format control found; leaving Seller Central's default (wanted ${format}).`);
-      return;
+    if (isThermal) {
+      const widthMm = thermal?.widthMm ?? 57;
+      const heightMm = thermal?.heightMm ?? 32;
+      await this.page.locator('kat-input[label="Width (mm)"] input').fill(String(widthMm));
+      await this.page.locator('kat-input[label="Height (mm)"] input').fill(String(heightMm));
+    } else {
+      await this.chooseDropdownOption('Paper/Sticker Type', STANDARD_FORMAT_LABELS[format]);
     }
-    await select.selectOption({ label: FORMAT_LABELS[format] }).catch(async () => {
-      log.warn(`Could not select "${FORMAT_LABELS[format]}" — check FORMAT_LABELS against the live dropdown.`);
-    });
+  }
+
+  /** Open a kat-dropdown by its label and click the option with matching text. */
+  private async chooseDropdownOption(dropdownLabel: string, optionText: string): Promise<void> {
+    await this.page.locator(`kat-dropdown[label="${escapeAttr(dropdownLabel)}"]`).click();
+    await this.page.locator('kat-option').filter({ hasText: optionText }).first().click();
   }
 
   /**
@@ -124,12 +131,9 @@ export class InventoryPage {
     const downloadPromise = this.page.waitForEvent('download', { timeout: 60_000 });
     const popupPromise = this.page.context().waitForEvent('page', { timeout: 60_000 }).catch(() => null);
 
-    await this.labelForm().getByRole('button', { name: /^print$|print labels/i }).first().click();
+    await this.page.locator('kat-button[label="Print Item Labels"]').click();
 
-    const popup = await Promise.race([
-      downloadPromise.then(() => null),
-      popupPromise,
-    ]);
+    const popup = await Promise.race([downloadPromise.then(() => null), popupPromise]);
 
     if (popup) {
       // PDF opened in a tab — pull it through the same download plumbing.
@@ -141,13 +145,17 @@ export class InventoryPage {
   }
 }
 
-/** Visible option text in the label-format dropdown, keyed by our enum. */
-const FORMAT_LABELS: Record<LabelFormat, string> = {
-  // TODO(selectors): copy the exact option strings out of the live dropdown.
-  '30-up': '30 labels per page (2-5/8" x 1")',
-  '24-up': '24 labels per page (2" x 1")',
-  '21-up': '21 labels per page (2-5/8" x 1")',
-  '27-up': '27 labels per page (2" x 1")',
-  'thermal-1x2': 'Thermal printing 1" x 2-1/8"',
-  'thermal-2x1': 'Thermal printing 2" x 1"',
+/** Escape a value for interpolation into a CSS attribute-selector string literal. */
+function escapeAttr(value: string): string {
+  return value.replace(/["\\]/g, '\\$&');
+}
+
+/** Visible option text in the Paper/Sticker Type dropdown, keyed by our enum. */
+const STANDARD_FORMAT_LABELS: Record<Exclude<LabelFormat, 'thermal'>, string> = {
+  ItemLabel_Letter_30: '30-up labels 1" x 2 5/8" on US Letter',
+  ItemLabel_A4_27: '27-up labels 63.5 x 29.6 mm on A4',
+  ItemLabel_A4_24: '24-up labels 66 x 33.9 mm on A4',
+  ItemLabel_A4_21: '21-up labels 63.5 x 38.1 mm on A4',
+  ItemLabel_A4_40_52x29: '40-up labels 52.5 x 29.7 mm on A4',
+  ItemLabel_A4_44_48x25: '44-up labels (25.4 mm x 48.5 mm) on A4',
 };
