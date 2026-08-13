@@ -10,5 +10,13 @@
     "sku": "EXAMPLE-SKU-002",
     "title": "Example product — variety pack",
     "quantity": 6
+  },
+  {
+    "sku": "EXAMPLE-SKU-003",
+    "title": "Example product — thermal printer",
+    "quantity": 12,
+    "format": "thermal",
+    "thermalWidthMm": 57,
+    "thermalHeightMm": 32
   }
 ]
