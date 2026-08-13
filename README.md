@@ -119,11 +119,19 @@ Central's DOM varies by account/A-B bucket):
   open shadow roots automatically, no special handling needed.
 - Unknown/invalid SKUs are silently dropped from the print-labels page (no
   error) — `renderedSkus()` diffs requested vs. rendered SKUs to detect them.
+- Both formats have been checked against the actual generated PDF, not just
+  "no error thrown": Standard produces the requested label count laid out on
+  the chosen paper size with a real FNSKU barcode; Thermal produces one
+  label per page sized exactly to the requested Width/Height (mm). Runs
+  headless the same as headed.
 - "Standard formats" offers a fixed Paper/Sticker Type dropdown (30/27/24/21/40/44-up).
   "Thermal printing" replaces that dropdown with freeform Width (mm) / Height (mm)
   fields (Amazon's own default is 57 × 32mm) — there's no fixed thermal preset.
-- `Manage Inventory`'s `list` command scraping (`listVisible`) only has the
-  SKU column confirmed; title/available columns are still a guess.
+- `Manage Inventory` rows have no fixed column layout in their text — "Out of
+  stock" rows carry an extra "Replenish inventory" action line that shifts
+  everything after it. `listVisible()` locates SKU/ASIN/title/available by
+  the label line right before/after them (e.g. the line after "SKU"), not by
+  position, so it holds up across listing statuses.
 
 To re-verify after a UI change:
 

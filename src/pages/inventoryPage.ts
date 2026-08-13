@@ -27,36 +27,57 @@ export class InventoryPage {
 
   /** Type a SKU/ASIN into the inventory search box and wait for the grid. */
   async search(query: string): Promise<void> {
-    const box = this.page.getByPlaceholder('Search SKU, Title/Keyword, FNSKU, ASIN, UPC/EAN');
+    // getByPlaceholder matches both the kat-input host and the native input
+    // in its shadow root (both carry the placeholder attribute) — a strict
+    // mode violation. Target the shadow-internal input directly instead.
+    const box = this.page.locator(
+      'kat-input[placeholder="Search SKU, Title/Keyword, FNSKU, ASIN, UPC/EAN"] input',
+    );
     await box.click();
     await box.fill(query);
     await box.press('Enter');
     await this.page.waitForLoadState('networkidle').catch(() => {});
   }
 
-  /** The grid row matching a SKU exactly. */
-  row(sku: string) {
-    return this.page.locator('[class*="tableContentRow"]').filter({ hasText: sku }).first();
-  }
-
-  async rowExists(sku: string): Promise<boolean> {
-    return (await this.row(sku).count()) > 0;
-  }
-
   /**
    * Scrape the visible page of the grid — backs the `list` command.
-   * TODO(selectors): only SKU is confirmed reliable (the row's id === the SKU
-   * text). Title/available columns still need a verification pass.
+   * Verified 2026-08-12: each row's innerText is a flat list of label/value
+   * lines — "ASIN", <asin>, "SKU", <sku>, "FNSKU", <fnsku>, ... "Available",
+   * <count>, ... — so values are pulled by looking up the line right after
+   * their label, not by pattern guessing (a plain regex over the lines
+   * previously matched "Active" as a fake SKU). Title sits right *before*
+   * "ASIN", not at a fixed line index — an "Out of stock" row has an extra
+   * "Replenish inventory" action line before it that a fixed index misses.
    */
   async listVisible(): Promise<InventoryItem[]> {
+    // Rows are an async render on top of the grid shell — same race as
+    // renderedSkus() on the print-labels page. A genuinely empty result set
+    // just times out here and returns [].
+    await this.page
+      .locator('[class*="tableContentRow"]')
+      .first()
+      .waitFor({ state: 'attached', timeout: 10_000 })
+      .catch(() => {});
+
     const rows = this.page.locator('[class*="tableContentRow"]');
     const count = await rows.count();
     const items: InventoryItem[] = [];
 
     for (let i = 0; i < count; i++) {
       const text = (await rows.nth(i).innerText().catch(() => '')).trim();
-      const sku = text.split('\n').find((line) => /^[A-Z0-9][A-Z0-9-]{4,}$/i.test(line.trim()));
-      if (sku) items.push({ sku: sku.trim() });
+      const lines = text.split('\n').map((line) => line.trim());
+      const after = (label: string) => {
+        const idx = lines.indexOf(label);
+        return idx >= 0 ? lines[idx + 1] : undefined;
+      };
+      const before = (label: string) => {
+        const idx = lines.indexOf(label);
+        return idx > 0 ? lines[idx - 1] : undefined;
+      };
+
+      const sku = after('SKU');
+      if (!sku) continue;
+      items.push({ sku, asin: after('ASIN'), title: before('ASIN'), available: after('Available') });
     }
     return items;
   }
