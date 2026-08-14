@@ -1,0 +1,36 @@
+name: Typecheck
+
+# CLAUDE.md: "`npm run typecheck` is the only automated gate — there are no
+# tests." It was being run by hand; this runs it on every PR and on main.
+#
+# Unlike the Claude review workflows, this needs no secrets and no write
+# token, so it runs on fork PRs too.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: typecheck-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      # --ignore-scripts skips the postinstall `playwright install chromium`.
+      # Typechecking needs Playwright's types, which come from the package
+      # itself; downloading the ~150MB browser binary here would be pure waste.
+      - run: npm ci --ignore-scripts
+
+      - run: npm run typecheck
