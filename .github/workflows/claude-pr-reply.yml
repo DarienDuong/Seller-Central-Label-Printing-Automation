@@ -1,10 +1,21 @@
 name: Claude PR Comment Reply
 
-# When a human replies inside a review-comment thread (e.g. pushing back on a
-# finding from claude-pr-review.yml), this evaluates the reply against the
-# actual code and replies in-thread — agreeing with reasoning if the pushback
-# holds up, or explaining concretely why the finding still stands if it
-# doesn't. Guarded to skip bot-authored comments so it never replies to itself.
+# When someone (human or bot) replies inside a review-comment thread (e.g.
+# pushing back on a finding from claude-pr-review.yml), this evaluates the
+# reply against the actual code and replies in-thread — agreeing with
+# reasoning if the pushback holds up, or explaining concretely why the
+# finding still stands if it doesn't.
+#
+# No author-type guard is needed to prevent a self-reply loop: every comment
+# this workflow posts goes through GH_TOKEN (the workflow's own GITHUB_TOKEN,
+# attributed to github-actions[bot]), and GitHub Actions never lets a
+# GITHUB_TOKEN-authored event trigger a new workflow run — that's a platform
+# security feature, not something this workflow has to enforce itself. That
+# means an author-type filter here would only ever block *other* bots'
+# legitimate replies, which is exactly the behavior we don't want (many PRs
+# and review comments in this repo are themselves bot-authored). The prompt
+# below still tells Claude to no-op on non-substantive replies, so it isn't
+# replying to every "thanks" either.
 #
 # Requires the same GitHub App + ANTHROPIC_API_KEY secret as claude-pr-review.yml.
 on:
@@ -13,7 +24,6 @@ on:
 
 jobs:
   reply:
-    if: github.event.comment.user.type != 'Bot'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -32,13 +42,19 @@ jobs:
             --max-turns 20
             --allowedTools "Bash(gh:*),Bash(git:*)"
           prompt: |
-            A human just posted comment id ${{ github.event.comment.id }} on PR
+            Someone just posted comment id ${{ github.event.comment.id }} on PR
             #${{ github.event.pull_request.number }} in ${{ github.repository }}, replying inside a
-            review-comment thread.
+            review-comment thread. The commenter may be a human or a bot — treat either the same way,
+            engaging with what they actually wrote.
 
-            Only act if this reply is substantively engaging with a review finding — arguing it's wrong,
-            explaining a fix, or asking a technical question about it. If it's unrelated chit-chat, a
-            simple "thanks", or not a reply to one of your own prior findings, do nothing and exit.
+            First, check who posted it (`gh api repos/${{ github.repository }}/pulls/comments/${{ github.event.comment.id }}`):
+            if the author is `github-actions[bot]`, it's a comment this same workflow posted — do nothing
+            and exit, there's nothing to reply to.
+
+            Otherwise, only act if the reply is substantively engaging with a review finding — arguing
+            it's wrong, explaining a fix, or asking a technical question about it. If it's unrelated
+            chit-chat, a simple "thanks", or not a reply inside one of the review threads, do nothing and
+            exit.
 
             1. Fetch the full comment list to reconstruct the thread:
                `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments --paginate`
