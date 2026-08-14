@@ -1,0 +1,62 @@
+name: Claude PR Review
+
+# Runs an automated code review as soon as a PR is opened or updated.
+# Requires:
+#   - The Claude GitHub App installed on this repo (https://github.com/apps/claude)
+#   - Secret ANTHROPIC_API_KEY (or CLAUDE_CODE_OAUTH_TOKEN) set on the repo
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: >-
+            --max-turns 30
+            --allowedTools "Bash(gh:*),Bash(git:*),Bash(python3:*)"
+          prompt: |
+            Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
+            Challenge the PR — don't rubber-stamp it. Look for genuine correctness bugs first, then
+            simplification/reuse/efficiency issues, then convention violations against any CLAUDE.md
+            files that govern the changed code.
+
+            Steps:
+            1. `gh pr diff ${{ github.event.pull_request.number }}` to see the full diff.
+            2. Read the CLAUDE.md file(s) that apply to the changed files (repo root plus any ancestor
+               directory of a changed file), and read the full surrounding code for each changed
+               function — not just the diff hunk — so you catch bugs in code the diff touches but
+               doesn't show.
+            3. For every candidate finding, verify it against the actual code before reporting: name the
+               concrete input/state that triggers it and the wrong output, or state what would need to be
+               true (timing, config, env) for it to fire if you can't fully confirm it. Drop anything you
+               can't ground in the real code.
+            4. Get the PR's head commit SHA: `gh pr view ${{ github.event.pull_request.number }} --json headRefOid -q .headRefOid`
+            5. Post each surviving finding as an inline review comment via the GitHub API, e.g.:
+               `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews -X POST --input <payload.json>`
+               where payload.json has `commit_id`, `event: "COMMENT"`, and a `comments` array of
+               `{path, line, body}`. Write each comment's body to explain your reasoning, not just your
+               conclusion — name the file/line, the concrete failure scenario, and why you think it's a
+               problem, so a human (or you, reading a reply later) can follow the logic and push back on
+               it specifically.
+            6. If a change is well-reasoned and you don't disagree with it, don't invent a nitpick to
+               justify commenting — silence there is fine. If you find nothing worth flagging anywhere in
+               the PR, post one top-level PR comment (via `gh pr comment`) saying so plainly and why.
+
+            Be direct and substantive. Disagreeing with the author's choices is the point of this review,
+            but every disagreement must be grounded in a concrete scenario in the actual code, never a
+            style preference.

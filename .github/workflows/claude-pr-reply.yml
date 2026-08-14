@@ -1,0 +1,62 @@
+name: Claude PR Comment Reply
+
+# When a human replies inside a review-comment thread (e.g. pushing back on a
+# finding from claude-pr-review.yml), this evaluates the reply against the
+# actual code and replies in-thread — agreeing with reasoning if the pushback
+# holds up, or explaining concretely why the finding still stands if it
+# doesn't. Guarded to skip bot-authored comments so it never replies to itself.
+#
+# Requires the same GitHub App + ANTHROPIC_API_KEY secret as claude-pr-review.yml.
+on:
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  reply:
+    if: github.event.comment.user.type != 'Bot'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: >-
+            --max-turns 20
+            --allowedTools "Bash(gh:*),Bash(git:*)"
+          prompt: |
+            A human just posted comment id ${{ github.event.comment.id }} on PR
+            #${{ github.event.pull_request.number }} in ${{ github.repository }}, replying inside a
+            review-comment thread.
+
+            Only act if this reply is substantively engaging with a review finding — arguing it's wrong,
+            explaining a fix, or asking a technical question about it. If it's unrelated chit-chat, a
+            simple "thanks", or not a reply to one of your own prior findings, do nothing and exit.
+
+            1. Fetch the full comment list to reconstruct the thread:
+               `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments --paginate`
+               Find comment ${{ github.event.comment.id }}, then walk `in_reply_to_id` to find the root
+               comment of its thread and every reply already in it, so you have the original finding and
+               the full back-and-forth.
+            2. Get the current diff/code: `gh pr diff ${{ github.event.pull_request.number }}`, and read
+               the actual file(s) at their current state on this branch to check the claims in the reply
+               against real code — don't take the reply's word for it.
+            3. Decide, on the merits:
+               - If the reply resolves or invalidates the original finding, reply in the thread agreeing,
+                 and say concretely what changed your mind — quote the specific line or logic that
+                 convinced you. Don't just say "agreed."
+               - If the finding still holds, reply explaining specifically why the pushback doesn't
+                 address the failure scenario — point at the code that still has the problem.
+               - It is fine, and expected, to concede a point when the code genuinely shows you were
+                 wrong. It is also fine to hold your ground. Do not default to agreement to be polite, and
+                 do not manufacture disagreement to seem thorough — ground the decision in what the code
+                 actually does.
+            4. Post your reply as a new comment in the same thread (not a new top-level comment):
+               `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments -X POST -f body="..." -f in_reply_to=<root_comment_id>`
