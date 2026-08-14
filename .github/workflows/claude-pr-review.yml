@@ -39,6 +39,11 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      # gh pr comment (step 7's fallback / "nothing found" comment) posts
+      # through the Issues API, not Pulls — PRs and issues share that
+      # comment endpoint under the hood, and it checks `issues`, not
+      # `pull-requests`, permission. pull-requests: write alone 403s it.
+      issues: write
       id-token: write
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
