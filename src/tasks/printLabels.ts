@@ -1,7 +1,7 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { config } from '../config.js';
-import { launchSession } from '../browser.js';
+import { launchSession, type Session } from '../browser.js';
 import { InventoryPage } from '../pages/inventoryPage.js';
 import { sendToPrinter } from '../printer.js';
 import { log } from '../logger.js';
@@ -12,6 +12,11 @@ export interface PrintOptions {
   dryRun?: boolean;
   /** Force a visible browser window for this run. */
   headed?: boolean;
+  /**
+   * Reuse an already-launched session (e.g. one that just read a shipment's
+   * contents) instead of launching a second one. The caller owns closing it.
+   */
+  session?: Session;
 }
 
 /**
@@ -31,7 +36,7 @@ export async function printLabels(
   if (requests.length === 0) return [];
 
   await mkdir(config.outputDir, { recursive: true });
-  const session = await launchSession({ headed: options.headed });
+  const session = options.session ?? (await launchSession({ headed: options.headed }));
   const inventory = new InventoryPage(session.page);
   const results: LabelResult[] = [];
 
@@ -79,7 +84,9 @@ export async function printLabels(
       }
     }
   } finally {
-    await session.close({ save: true });
+    // Only close a session we launched ourselves — a caller-supplied one is
+    // theirs to close (they may still need it after this call returns).
+    if (!options.session) await session.close({ save: true });
   }
 
   return results;

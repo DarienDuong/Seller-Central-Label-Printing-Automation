@@ -39,6 +39,15 @@ export interface LabelResult {
   message?: string;
 }
 
+/** One SKU inside a Send to Amazon shipment, as shown on its content step. */
+export interface ShipmentItem {
+  sku: string;
+  /** Units being sent — one FNSKU label is needed per unit. */
+  units: number;
+  /** Boxes the units are split across. Informational; labels go on units. */
+  boxes?: number;
+}
+
 /** A row scraped out of Manage Inventory, for the `list` command. */
 export interface InventoryItem {
   sku: string;
