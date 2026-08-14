@@ -1,7 +1,8 @@
 # Project context & status
 
 Handoff doc for starting a fresh Claude Code / Codex session on this repo without
-re-deriving everything. Last updated **2026-08-14** (main @ `8ba46bd`).
+re-deriving everything. Last updated **2026-08-14** (main @ `6e98828`; open PR #8
+adds two more commits on top, see below).
 
 ---
 
@@ -31,20 +32,24 @@ the SP-API just because it'd be easier).
 ## 2. Current status
 
 **Phases 1–3 are done and verified against a live account.** Phase 4 is
-"make it shareable", and only Part A is complete.
+"make it shareable" — Part A is merged, Part B is implemented and awaiting
+live verification + review on an open PR.
 
 | Phase | Scope | State |
 | --- | --- | --- |
 | 1–3 | login, print by SKU, `--file` batches, `list` inventory | ✅ done, live-verified |
 | 4A | **shipment mode** (`--shipment`) | ✅ done, merged in PR #6 |
-| 4B | **Windows printing support** | 🟡 implemented, unverified on real Windows/printer |
+| 4B | **Windows printing support** | 🟡 implemented + typechecked, **open PR #8**, unverified on a real Windows box/printer |
 | 4C | **MCP server** | ⬜ not started |
 | 4D | **teammate onboarding docs** | ⬜ not started |
 
 Sequencing 4B/4C/4D was the owner's call: shipment mode first (done), the rest
-after. Confirm with the owner before starting any of B/C/D.
+after. Confirm with the owner before starting any of C/D.
 
-`main` is clean and contains everything. All feature branches are merged.
+`main` (`6e98828`) contains Phases 1–3 and 4A. **`feat/windows-printing`
+(PR #8, open) has 4B on top of it** — not yet merged, not yet run against a
+real Windows machine. Start a fresh session from `main` only if 4B isn't the
+task; otherwise check out/continue that branch.
 PR #4 ("Added my print label script in project sub-directory") is still **open**
 and is a stale/superseded PR from before the rewrite — check with the owner
 before touching it.
@@ -179,10 +184,11 @@ temporarily flip the Windows default printer to `PRINTER_NAME` via
 `Start-Process -Verb Print` once per copy (the registered PDF handler's
 print verb, which only ever targets the default printer), wait ~5s/copy for
 it to spool, then restore the previous default printer. `--printers` lists
-`Win32_Printer` names on Windows. Implemented and typechecked
-(`8ba46bd`..HEAD on a feature branch) but **not yet run against a real
-Windows machine with a physical printer** — the owner doesn't have warehouse
-PC access this session. Treat the first live run as the real test: use
+`Win32_Printer` names on Windows. Implemented and typechecked on
+`feat/windows-printing` (**open PR #8**, two commits on top of `main`
+`6e98828`) but **not yet run against a real Windows machine with a physical
+printer** — the owner doesn't have warehouse PC access this session. Treat
+the first live run as the real test: use
 `--dry-run` first, confirm `PRINTER_NAME` matches `Get-CimInstance
 Win32_Printer`, and watch the job land in the Windows print queue. Known
 rough edge: if the process is killed mid-print, the Windows default printer
