@@ -1,4 +1,4 @@
-import { launchSession } from '../browser.js';
+import { launchSession, type Session } from '../browser.js';
 import { ShipmentPage, parseWorkflowId } from '../pages/shipmentPage.js';
 import { printLabels, type PrintOptions } from './printLabels.js';
 import { log } from '../logger.js';
@@ -11,6 +11,21 @@ export interface ShipmentLookupOptions {
   format?: LabelFormat;
 }
 
+/**
+ * Open a shipment workflow in an existing session and read its contents.
+ * Shared by both entry points below so the flow and its logging can't drift.
+ */
+async function readShipmentInSession(session: Session, workflowId: string): Promise<ShipmentItem[]> {
+  log.step(`Reading shipment workflow ${workflowId}… (this page is slow to load)`);
+  const shipment = new ShipmentPage(session.page);
+  await shipment.open(workflowId);
+
+  const items = await shipment.readyToSendItems();
+  const totalUnits = items.reduce((sum, i) => sum + i.units, 0);
+  log.done(`Shipment has ${items.length} SKUs, ${totalUnits} units total.`);
+  return items;
+}
+
 /** Scrape a shipment's SKUs and unit counts without printing anything. */
 export async function readShipmentItems(
   workflowInput: string,
@@ -18,27 +33,11 @@ export async function readShipmentItems(
 ): Promise<ShipmentItem[]> {
   const workflowId = parseWorkflowId(workflowInput);
   const session = await launchSession({ headed: options.headed });
-
   try {
-    log.step(`Reading shipment workflow ${workflowId}… (this page is slow to load)`);
-    const shipment = new ShipmentPage(session.page);
-    await shipment.open(workflowId);
-
-    const items = await shipment.readyToSendItems();
-    const totalUnits = items.reduce((sum, i) => sum + i.units, 0);
-    log.done(`Shipment has ${items.length} SKUs, ${totalUnits} units total.`);
-    return items;
+    return await readShipmentInSession(session, workflowId);
   } finally {
     await session.close({ save: true });
   }
-}
-
-function itemsToRequests(items: ShipmentItem[], format?: LabelFormat): LabelRequest[] {
-  return items.map((item) => ({
-    sku: item.sku,
-    quantity: item.units,
-    ...(format ? { format } : {}),
-  }));
 }
 
 /**
@@ -55,17 +54,17 @@ export async function printShipmentLabels(
   const session = await launchSession({ headed: options.headed });
 
   try {
-    log.step(`Reading shipment workflow ${workflowId}… (this page is slow to load)`);
-    const shipment = new ShipmentPage(session.page);
-    await shipment.open(workflowId);
-
-    const items = await shipment.readyToSendItems();
-    const totalUnits = items.reduce((sum, i) => sum + i.units, 0);
-    log.done(`Shipment has ${items.length} SKUs, ${totalUnits} units total.`);
-
-    const requests = itemsToRequests(items, options.format);
-    return await printLabels(requests, { ...options, session });
+    const items = await readShipmentInSession(session, workflowId);
+    return await printLabels(itemsToRequests(items, options.format), { ...options, session });
   } finally {
     await session.close({ save: true });
   }
+}
+
+function itemsToRequests(items: ShipmentItem[], format?: LabelFormat): LabelRequest[] {
+  return items.map((item) => ({
+    sku: item.sku,
+    quantity: item.units,
+    ...(format ? { format } : {}),
+  }));
 }

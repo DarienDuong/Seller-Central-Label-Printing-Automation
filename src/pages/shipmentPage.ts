@@ -3,8 +3,19 @@ import { gotoAuthed } from '../auth.js';
 import { log } from '../logger.js';
 import type { ShipmentItem } from '../types.js';
 
-/** Max value in the page's "results per page" dropdown — fewer page turns. */
+const PAGER = 'kat-pagination[data-testid="sku-paging"]';
+
+/**
+ * Rows per page to request. The dropdown offers 10/25/50/100 — 100 keeps most
+ * shipments on a single page. Overridable via SHIPMENT_PAGE_SIZE purely as a
+ * debug knob: setting it low is the only practical way to exercise the
+ * multi-page path against a shipment that would otherwise fit on one page.
+ */
 const MAX_PAGE_SIZE = 100;
+const PAGE_SIZE = Number.parseInt(process.env.SHIPMENT_PAGE_SIZE ?? '', 10) || MAX_PAGE_SIZE;
+
+/** How long to wait for the pager to reflect a tab/page-size/page change. */
+const SETTLE_TIMEOUT_MS = 30_000;
 
 /**
  * Page object for the Send to Amazon workflow's "Choose inventory to send"
@@ -21,14 +32,34 @@ const MAX_PAGE_SIZE = 100;
  *   the catalogue with no quantities.
  * - On the ready-to-send tab quantities are rendered as *text*
  *   ("Units: 198" / "Boxes: 33"), not form inputs.
- * - The list paginates (default 25/page). Shipments of 30–60 SKUs are normal,
- *   so page size is raised and every page is walked; the scraped count is then
- *   checked against the widget's own `total-items` so a partial read fails
- *   loudly instead of silently printing labels for a subset.
- * - The page is slow — 15–20s to first paint is normal — hence the long waits.
+ * - The page is slow — 15–20s to first paint is normal.
+ *
+ * Pagination on this tab does not work the way it first appears, which
+ * matters a lot for correctness (verified against a live shipment):
+ *
+ * - On the ready-to-send tab the pager's `total-items` is the number of rows
+ *   *currently rendered*, not the shipment total. At 10 rows/page a 12-SKU
+ *   shipment reports `total-items=10`. (On the All-FBA tab it does report the
+ *   true total.) So `total-items` is useless as a completeness check here —
+ *   trusting it would let a short read pass silently.
+ * - Because it reports total == page size, the pager concludes there is one
+ *   page and renders no next/prev controls at all — there is nothing to click
+ *   through to page 2.
+ * - The trustworthy total is the tab's own label, "SKUs ready to send (N)".
+ *
+ * So the strategy is: read N from the tab label, ask for the largest page
+ * size Amazon offers (100) so every row is on one page, and require exactly N
+ * rows before returning. A shipment larger than 100 ready-to-send SKUs can't
+ * be read this way and fails loudly rather than silently truncating.
+ *
+ * Every state change waits on an observable condition rather than a fixed
+ * sleep, so a scrape can't run against the wrong tab or a half-rendered one.
  */
 export class ShipmentPage {
   constructor(private readonly page: Page) {}
+
+  /** SKU count parsed from the "SKUs ready to send (N)" tab label. */
+  private expectedFromTab: number | null = null;
 
   /** Open the workflow's content step and switch to its ready-to-send contents. */
   async open(workflowId: string): Promise<void> {
@@ -36,7 +67,7 @@ export class ShipmentPage {
 
     // Wait for the SKU table itself, not just the shell.
     await this.page
-      .locator('kat-pagination[data-testid="sku-paging"]')
+      .locator(PAGER)
       .waitFor({ state: 'attached', timeout: 90_000 })
       .catch(() => {
         throw new Error(
@@ -44,53 +75,122 @@ export class ShipmentPage {
         );
       });
 
+    // Page size first, then the tab. Changing the page size re-queries the
+    // list and resets it to the default "All FBA SKUs" tab, so doing it after
+    // the tab switch silently throws away the switch — observed live as
+    // "Read 1 of 1429 SKUs" (1429 being the whole catalogue).
+    await this.setPageSize(PAGE_SIZE);
     await this.selectReadyToSendTab();
-    await this.setPageSize(MAX_PAGE_SIZE);
+
   }
 
   /** Switch to the "SKUs ready to send (N)" tab — a view filter, nothing is mutated. */
   private async selectReadyToSendTab(): Promise<void> {
-    const tab = this.page.getByText(/SKUs ready to send/i).first();
+    // Scoped to kat-tab: an unscoped getByText would also match a banner or
+    // tooltip carrying the same phrase and click the wrong thing.
+    const tab = this.page.locator('kat-tab').filter({ hasText: /SKUs ready to send/i }).first();
     if ((await tab.count()) === 0) {
       throw new Error('Could not find the "SKUs ready to send" tab on the shipment page.');
     }
-    await tab.click();
-    await this.page.waitForTimeout(5_000);
+
+    const label = await tab.innerText().catch(() => '');
+    const parsed = Number.parseInt((label.match(/\((\d[\d,]*)\)/)?.[1] ?? '').replace(/,/g, ''), 10);
+    this.expectedFromTab = Number.isFinite(parsed) ? parsed : null;
+
+    if (this.expectedFromTab === null) {
+      log.warn('Could not read a SKU count from the tab label; the completeness check will be skipped.');
+    }
+
+    // Retried because the click can land mid-re-render (the page-size change
+    // just above re-queries the list) and silently not register, which looks
+    // identical to a slow load. "Switched" means shipment rows are actually
+    // present — All-FBA rows carry no "Units:" value, so a non-empty
+    // extraction is proof we're on the right tab.
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await tab.click().catch(() => {});
+      const switched = await this.waitFor(async () => (await this.extractRows()).length > 0, 15_000);
+      if (switched) return;
+      log.warn(`The SKU list didn't switch to the shipment's contents (attempt ${attempt}/3); retrying…`);
+    }
+
+    throw new Error(
+      'Could not switch to the shipment\'s "SKUs ready to send" contents. ' +
+        'The page may still be loading — retry, or use --headed to watch.',
+    );
   }
 
   /** Raise the results-per-page dropdown so most shipments fit on one page. */
   private async setPageSize(size: number): Promise<void> {
-    const dropdown = this.page.locator('kat-dropdown').filter({ hasText: /results per page/i }).first();
-    if ((await dropdown.count()) === 0) return;
-    await dropdown.click().catch(() => {});
-    await this.page
-      .locator('kat-option')
-      .filter({ hasText: new RegExp(`^${size} results per page`) })
-      .first()
-      .click()
-      .catch(() => {});
-    await this.page.waitForTimeout(5_000);
+    const dropdown = this.page.locator('kat-dropdown[data-testid="page-size-dropdown"]');
+    if ((await dropdown.count()) === 0) {
+      log.warn('No results-per-page control found; paging through at the default size.');
+      return;
+    }
+
+    try {
+      await dropdown.click();
+      // Scope the option to *this* dropdown and match on its value attribute.
+      // An unscoped `kat-option` locator picks from ~76 options across the
+      // page's other dropdowns, lands on one inside a closed dropdown, and
+      // then blocks until the action timeout — which is exactly how this
+      // silently degraded to the default page size before.
+      await dropdown.locator(`kat-option[value="${size}"]`).first().click();
+    } catch (err) {
+      // Say so rather than swallowing it: this tab has no next-page control,
+      // so a page size smaller than the shipment means an unreadable
+      // shipment, and the only other symptom would be a confusing shortfall.
+      log.warn(`Could not select "${size} results per page" (${errText(err)}); using the default page size.`);
+      return;
+    }
+
+    const applied = await this.waitFor(async () => (await this.pagerAttr('items-per-page')) === String(size));
+    if (!applied) log.warn(`Page size did not change to ${size}; the shipment may not fit on one page.`);
   }
 
-  /** Total SKUs in this shipment, per the pagination widget's own count. */
-  private async totalItems(): Promise<number | null> {
-    const raw = await this.page
-      .locator('kat-pagination[data-testid="sku-paging"]')
-      .first()
-      .getAttribute('total-items')
-      .catch(() => null);
-    const n = Number.parseInt(raw ?? '', 10);
-    return Number.isFinite(n) ? n : null;
+  /** Read one attribute off the pager. */
+  private async pagerAttr(name: string): Promise<string | null> {
+    return this.page.locator(PAGER).first().getAttribute(name).catch(() => null);
   }
 
-  /** Scrape the SKU rows visible on the current page. */
-  private async rowsOnPage(): Promise<ShipmentItem[]> {
+  /** Poll `check` until it's true or the timeout elapses. */
+  private async waitFor(check: () => Promise<boolean>, timeout = SETTLE_TIMEOUT_MS): Promise<boolean> {
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      if (await check().catch(() => false)) return true;
+      if (Date.now() >= deadline) return false;
+      await this.page.waitForTimeout(500);
+    }
+  }
+
+  /**
+   * Scrape the SKU rows visible on the current page.
+   *
+   * Rows here read as "SKU: 00-CYS0-9GM6" — label and value on one line —
+   * so values are pulled with label-anchored regexes. (This is a different
+   * text shape from Manage Inventory, where the label and its value sit on
+   * separate lines and `listVisible()` therefore indexes by line instead.)
+   */
+  private async rowsOnPage(expectedRows: number | null): Promise<ShipmentItem[]> {
     await this.page
       .locator('.sku-row-sku-details')
       .first()
       .waitFor({ state: 'attached', timeout: 30_000 })
       .catch(() => {});
 
+    // Rows paint progressively, and the other tab's rows sit in the DOM too —
+    // so counting `.sku-row-sku-details` is a bad proxy for readiness (it's
+    // satisfied by the hidden All-FBA rows while ready-to-send rows are still
+    // arriving, which showed up live as "Read 1 of 12"). Poll the real
+    // extraction instead: it only counts rows that actually carry a SKU and a
+    // "Units:" value, which is exactly what we're waiting for.
+    if (expectedRows !== null && expectedRows > 0) {
+      await this.waitFor(async () => (await this.extractRows()).length >= expectedRows);
+    }
+    return this.extractRows();
+  }
+
+  /** Parse the SKU rows currently in the DOM. Rows mid-render simply don't match yet. */
+  private async extractRows(): Promise<ShipmentItem[]> {
     return this.page.evaluate(() => {
       const items: { sku: string; units: number; boxes?: number }[] = [];
       document.querySelectorAll('.sku-row-sku-details').forEach((detail) => {
@@ -113,40 +213,34 @@ export class ShipmentPage {
    * printing labels for a subset of a shipment is worse than failing.
    */
   async readyToSendItems(): Promise<ShipmentItem[]> {
-    const total = await this.totalItems();
-    const collected = new Map<string, ShipmentItem>();
+    const expected = this.expectedFromTab;
+    const items = await this.rowsOnPage(expected);
 
-    for (let page = 1; page <= 50; page++) {
-      for (const item of await this.rowsOnPage()) collected.set(item.sku, item);
-      if (total !== null && collected.size >= total) break;
-      if (!(await this.goToNextPage())) break;
+    if (items.length === 0) throw new Error('No ready-to-send SKUs found in this shipment.');
+    if (expected === null) {
+      log.warn(`Read ${items.length} SKUs, but the shipment's own SKU count was unreadable — verify before printing.`);
+      return items;
     }
 
-    const items = [...collected.values()];
-    if (total !== null && items.length !== total) {
+    if (items.length !== expected) {
+      // This tab has no working next-page control (see the class notes), so a
+      // shortfall is terminal rather than something to page past.
       throw new Error(
-        `Read ${items.length} of ${total} SKUs from the shipment — refusing to print a partial shipment. ` +
-          `The page may still have been loading; retry, or use --headed to watch.`,
+        `Read ${items.length} of ${expected} SKUs from the shipment — refusing to print a partial shipment. ` +
+          (expected > PAGE_SIZE
+            ? `They don't fit on one page of ${PAGE_SIZE}, and this tab exposes no next-page control` +
+              (PAGE_SIZE < MAX_PAGE_SIZE
+                ? ` — raise SHIPMENT_PAGE_SIZE (max ${MAX_PAGE_SIZE}).`
+                : `, which is the largest page Seller Central offers. Print it in parts with --file instead.`)
+            : 'The page may still have been loading; retry, or use --headed to watch.'),
       );
     }
-    if (items.length === 0) throw new Error('No ready-to-send SKUs found in this shipment.');
     return items;
   }
+}
 
-  /** Advance the SKU pager one page. Returns false when there is no next page. */
-  private async goToNextPage(): Promise<boolean> {
-    const next = this.page
-      .locator('kat-pagination[data-testid="sku-paging"]')
-      .getByRole('button', { name: /next/i })
-      .first();
-
-    if ((await next.count()) === 0 || (await next.isDisabled().catch(() => true))) return false;
-
-    await next.click().catch(() => {});
-    await this.page.waitForTimeout(5_000);
-    log.info('Advanced to the next page of shipment SKUs…');
-    return true;
-  }
+function errText(err: unknown): string {
+  return err instanceof Error ? err.message.split('\n')[0]! : String(err);
 }
 
 /**

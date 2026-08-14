@@ -224,10 +224,17 @@ modifies, or advances a workflow.
   catalogue with empty quantity fields — reading it would be badly wrong.
   Shipment contents live on the **"SKUs ready to send (N)"** tab, where
   quantities are rendered as *text* ("Units: 198"), not form inputs.
-- The list paginates at 25/page and real shipments run 30–60 SKUs, so page
-  size is raised to 100 and remaining pages are walked. The scraped count is
-  then checked against the pager's own `total-items`; a short read throws
-  rather than quietly printing labels for part of a shipment.
+- Pagination on this tab is a trap. The pager's `total-items` is the number
+  of rows *currently rendered*, not the shipment total — at 10 rows/page a
+  12-SKU shipment reports `total-items=10` — and because it reports
+  total == page size, the widget concludes there's one page and renders **no
+  next/prev controls at all**. So `total-items` can't be used as a
+  completeness check, and there's nothing to click through to page 2.
+  The trustworthy total is the tab's own label, "SKUs ready to send (N)".
+  The code reads N from there, requests the largest page size Amazon offers
+  (100) so everything lands on one page, and requires exactly N rows before
+  returning. A shipment over 100 ready-to-send SKUs fails loudly with
+  instructions rather than silently printing a subset.
 - This page is genuinely slow — 15–20s to first paint is normal, and the
   newer React Shipments list (`/amazonsell/shipments`) frequently hangs
   outright. Waits here are deliberately long.
@@ -237,6 +244,16 @@ modifies, or advances a workflow.
   mid-run. If you see a "Target page, context or browser has been closed"
   error, confirm you're not on that earlier version (`shipmentToRequests`
   in a stack trace is the tell).
+- Page size must be set **before** switching tabs: changing it re-queries the
+  list and resets it to the default "All FBA SKUs" tab, silently discarding
+  the switch (seen live as "Read 1 of 1429 SKUs").
+- Locators here are scoped to a container (`kat-dropdown[data-testid=
+  "page-size-dropdown"]`, `kat-tab`). An unscoped `kat-option` locator picks
+  from ~76 options across the page's other dropdowns and blocks until the
+  action timeout — which is how page size silently never applied at all.
+- `SHIPMENT_PAGE_SIZE` overrides the requested page size (10/25/50/100). It
+  exists so the "shipment doesn't fit on one page" path can be exercised
+  against a normal-sized shipment; leave it unset in normal use.
 
 To re-verify after a UI change:
 
