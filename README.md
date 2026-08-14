@@ -12,7 +12,8 @@ structured input (`--file products.json`) and can emit structured output
 
 - Node **22** (an `.nvmrc` is included — run `nvm use`)
 - A Seller Central account with FBA/label permissions
-- Optional: a CUPS printer for auto-printing (`lpstat -p`)
+- Optional: a printer for auto-printing — CUPS on macOS/Linux (`lpstat -p`),
+  any installed printer on Windows (see [Printing on Windows](#printing-on-windows))
 
 ## Setup
 
@@ -152,8 +153,38 @@ Flags:
 | `--dry-run` | Download only, never send to the printer |
 | `--headed` | Force a visible browser window |
 | `--json` | Machine-readable output (for skill use) |
-| `--printers` | List CUPS printers and exit |
+| `--printers` | List known printers and exit |
 | `--help` | Show usage |
+
+## Printing on Windows
+
+The warehouse printer is on a Windows PC, so `src/printer.ts` branches by
+platform — same `PRINTER_NAME` in `.env`, same CLI, no code changes needed
+either side. But the mechanism is very different, because Windows has no
+CLI equivalent of `lp -d <printer>`:
+
+- There's no built-in way to send a PDF to a *named* printer from the
+  command line. The only printer-agnostic route is the registered PDF
+  handler's "Print" shell verb (`Start-Process -Verb Print`), and that verb
+  always prints to the current **default** printer — it doesn't take a
+  printer name.
+- So each print job: reads the current Windows default printer, flips the
+  default to `PRINTER_NAME` (via `Win32_Printer.SetDefaultPrinter` over
+  PowerShell/CIM), fires the Print verb once per copy, waits ~5s per copy
+  for the handler to pick the job up, then restores the original default.
+- This needs a PDF viewer with a registered Print verb — Edge (installed on
+  every Windows box) or Acrobat both work.
+- `--printers` on Windows lists `Win32_Printer` names instead of CUPS
+  queues.
+
+This flips the machine's default printer for the duration of the print
+call. It's restored automatically afterward, but if the process is killed
+mid-print the default may be left pointing at `PRINTER_NAME` until the next
+run (or you fix it by hand in Settings). It hasn't yet been verified against
+a real Windows box + physical printer — the code paths were written and
+typechecked but not run live; treat the first real run as the actual test
+and watch it happen (`--dry-run` first, or watch the print job appear in
+the print queue).
 
 ## Where the PDFs go
 
@@ -179,7 +210,7 @@ npm run list -- --search "coffee"
 | [src/pages/shipmentPage.ts](src/pages/shipmentPage.ts) | Send to Amazon content step — reads a shipment's SKUs and unit counts |
 | [src/tasks/printLabels.ts](src/tasks/printLabels.ts) | Batch flow: group by format → print-labels page → set quantities → submit → save |
 | [src/tasks/shipmentLabels.ts](src/tasks/shipmentLabels.ts) | Turns a shipment workflow into label requests |
-| [src/printer.ts](src/printer.ts) | CUPS `lp` handoff |
+| [src/printer.ts](src/printer.ts) | Printer handoff — CUPS `lp` on macOS/Linux, PowerShell/Win32_Printer on Windows |
 
 ## How it works
 

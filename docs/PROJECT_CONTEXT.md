@@ -37,7 +37,7 @@ the SP-API just because it'd be easier).
 | --- | --- | --- |
 | 1–3 | login, print by SKU, `--file` batches, `list` inventory | ✅ done, live-verified |
 | 4A | **shipment mode** (`--shipment`) | ✅ done, merged in PR #6 |
-| 4B | **Windows printing support** | ⬜ not started |
+| 4B | **Windows printing support** | 🟡 implemented, unverified on real Windows/printer |
 | 4C | **MCP server** | ⬜ not started |
 | 4D | **teammate onboarding docs** | ⬜ not started |
 
@@ -172,10 +172,23 @@ These cost real debugging time. Don't rediscover them.
 
 ## 7. Open threads / next work
 
-**4B — Windows support.** `src/printer.ts` shells out to CUPS `lp` / `lpstat`,
-which don't exist on Windows. Needs a platform branch (likely PowerShell
-`Out-Printer` or `Start-Process -Verb Print`), plus a Windows equivalent for
-`--printers`. Setup docs also need `nvm-windows` notes — it ignores `.nvmrc`.
+**4B — Windows support.** `src/printer.ts` now branches on `os.platform()`.
+Windows has no CLI equivalent of `lp -d <printer>`, so the approach is:
+temporarily flip the Windows default printer to `PRINTER_NAME` via
+`Win32_Printer.SetDefaultPrinter` (PowerShell + CIM), fire
+`Start-Process -Verb Print` once per copy (the registered PDF handler's
+print verb, which only ever targets the default printer), wait ~5s/copy for
+it to spool, then restore the previous default printer. `--printers` lists
+`Win32_Printer` names on Windows. Implemented and typechecked
+(`8ba46bd`..HEAD on a feature branch) but **not yet run against a real
+Windows machine with a physical printer** — the owner doesn't have warehouse
+PC access this session. Treat the first live run as the real test: use
+`--dry-run` first, confirm `PRINTER_NAME` matches `Get-CimInstance
+Win32_Printer`, and watch the job land in the Windows print queue. Known
+rough edge: if the process is killed mid-print, the Windows default printer
+can be left pointed at `PRINTER_NAME` instead of restored.
+
+Still open: setup docs need `nvm-windows` notes — it ignores `.nvmrc`.
 
 **4C — MCP server.** Expose `print_labels`, `list_inventory`,
 `print_shipment_labels`, and a session-status check. stdio transport is the
