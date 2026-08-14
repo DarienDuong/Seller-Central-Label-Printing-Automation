@@ -186,6 +186,51 @@ typechecked but not run live; treat the first real run as the actual test
 and watch it happen (`--dry-run` first, or watch the print job appear in
 the print queue).
 
+### Setting `PRINTER_NAME` on Windows
+
+`PRINTER_NAME` has to match a name Windows itself knows about — the same
+string shown in **Settings → Bluetooth & devices → Printers & scanners**, or
+from PowerShell:
+
+```powershell
+Get-CimInstance -ClassName Win32_Printer | Select-Object Name
+```
+
+or equivalently, once the repo is set up:
+
+```bash
+npm run print -- --printers
+```
+
+Example output:
+
+```
+Name
+----
+Zebra ZD420 (Warehouse)
+Microsoft Print to PDF
+HP LaserJet M110
+```
+
+Copy the exact printer name (including spaces/parens) into `.env`:
+
+```bash
+PRINTER_NAME=Zebra ZD420 (Warehouse)
+```
+
+Then verify it end to end — `--dry-run` first to confirm the PDF itself
+looks right, then a real run for one SKU/qty 1 to confirm the job actually
+reaches that printer:
+
+```bash
+npm run print -- --sku ABC-123 --qty 1 --dry-run
+npm run print -- --sku ABC-123 --qty 1
+```
+
+If `PRINTER_NAME` doesn't exactly match a `Win32_Printer` name, `SetDefaultPrinter`
+fails and the run errors out before anything prints — it will not silently
+fall back to whatever printer happened to be default.
+
 ## Where the PDFs go
 
 Downloaded labels land in `output/` (`OUTPUT_DIR` in `.env`), one file per
