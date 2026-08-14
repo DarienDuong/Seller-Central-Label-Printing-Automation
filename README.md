@@ -97,12 +97,57 @@ output, and `format` overrides `DEFAULT_LABEL_FORMAT` for that one SKU (the
 npm run print -- --file data/products.json --dry-run
 ```
 
+### A whole shipment
+
+Instead of listing SKUs yourself, point it at a Send to Amazon workflow and it
+reads the shipment's contents and prints one label per unit:
+
+```bash
+npm run print -- --shipment wf7f067182-69c7-4aa8-bb32-5c3cdee02ba5 --dry-run
+```
+
+You can paste the whole browser URL instead of the bare id — both work:
+
+```bash
+npm run print -- --shipment "https://sellercentral.amazon.com/fba/sendtoamazon/confirm_content_step?wf=wf7f0..." --dry-run
+```
+
+Note this is the **workflow** id (`wf…`) from the Send to Amazon URL, not the
+`FBA…` shipment id — an in-progress shipment doesn't have an `FBA…` id yet.
+Passing an `FBA…` id gives you an error that says so.
+
+To see what's in a shipment without printing anything:
+
+```bash
+npm run shipment -- --shipment wf7f067182-69c7-4aa8-bb32-5c3cdee02ba5
+```
+
+```
+1A-36WM-NXLR                198 units  (33 boxes)
+96-7AZY-29SC                396 units  (66 boxes)
+...
+12 SKUs, 2433 units total.
+```
+
+Worth doing first — a real shipment can be thousands of labels (the example
+above is 82 pages of 30-up), so it's cheap insurance against printing the
+wrong workflow.
+
+Reading a shipment and printing its labels share one browser session and one
+sign-in, so `--shipment` takes roughly a minute end to end (a shipment can be
+30–60+ SKUs, and the Send to Amazon page itself is slow — see
+[How it works](#shipment-mode)) — that's normal, not a hang. `BROWSER_MODE=headed`
+(the `.env.example` default) pops a real Chromium window for that whole
+minute; switch to `BROWSER_MODE=headless` in `.env` once you trust the flow
+and don't need to watch it.
+
 Flags:
 
 | Flag | Meaning |
 | --- | --- |
 | `--sku <sku>` / `--qty <n>` | Repeatable pair — quantity applies to the `--sku` right before it |
 | `--file <path>` | JSON array of `{ sku, quantity, format?, title? }` — see [data/products.example.json](data/products.example.json) |
+| `--shipment <wf>` | Send to Amazon workflow id (or its URL) — labels every ready-to-send SKU, one label per unit |
 | `--format <fmt>` | `ItemLabel_Letter_30` (default), `ItemLabel_A4_27`, `ItemLabel_A4_24`, `ItemLabel_A4_21`, `ItemLabel_A4_40_52x29`, `ItemLabel_A4_44_48x25`, or `thermal` |
 | `--dry-run` | Download only, never send to the printer |
 | `--headed` | Force a visible browser window |
@@ -126,12 +171,14 @@ npm run list -- --search "coffee"
 
 | Path | Role |
 | --- | --- |
-| [src/cli.ts](src/cli.ts) | Arg parsing and the `login` / `print` / `list` commands |
+| [src/cli.ts](src/cli.ts) | Arg parsing and the `login` / `print` / `shipment` / `list` commands |
 | [src/config.ts](src/config.ts) | `.env` loading, Seller Central URL builder |
 | [src/browser.ts](src/browser.ts) | Chromium launch + saved-session context |
 | [src/auth.ts](src/auth.ts) | Interactive login, session detection |
 | [src/pages/inventoryPage.ts](src/pages/inventoryPage.ts) | Manage Inventory + Print Item Labels page object |
+| [src/pages/shipmentPage.ts](src/pages/shipmentPage.ts) | Send to Amazon content step — reads a shipment's SKUs and unit counts |
 | [src/tasks/printLabels.ts](src/tasks/printLabels.ts) | Batch flow: group by format → print-labels page → set quantities → submit → save |
+| [src/tasks/shipmentLabels.ts](src/tasks/shipmentLabels.ts) | Turns a shipment workflow into label requests |
 | [src/printer.ts](src/printer.ts) | CUPS `lp` handoff |
 
 ## How it works
@@ -164,6 +211,33 @@ Central's DOM varies by account/A-B bucket):
   the label line right before/after them (e.g. the line after "SKU"), not by
   position, so it holds up across listing statuses.
 
+### Shipment mode
+
+Verified 2026-08-13 against a live open shipment. Shipment mode is purely a
+*read* of the Send to Amazon content step — it scrapes SKUs and unit counts,
+then hands them to the same verified print flow above. It never confirms,
+modifies, or advances a workflow.
+
+- The step is keyed by **workflow** id (`wf…`), not the `FBA…` shipment id; an
+  in-progress workflow has no `FBA…` id yet.
+- The page has two tabs. The default, "All FBA SKUs", lists your entire
+  catalogue with empty quantity fields — reading it would be badly wrong.
+  Shipment contents live on the **"SKUs ready to send (N)"** tab, where
+  quantities are rendered as *text* ("Units: 198"), not form inputs.
+- The list paginates at 25/page and real shipments run 30–60 SKUs, so page
+  size is raised to 100 and remaining pages are walked. The scraped count is
+  then checked against the pager's own `total-items`; a short read throws
+  rather than quietly printing labels for part of a shipment.
+- This page is genuinely slow — 15–20s to first paint is normal, and the
+  newer React Shipments list (`/amazonsell/shipments`) frequently hangs
+  outright. Waits here are deliberately long.
+- `printShipmentLabels()` reads the shipment and prints in **one** browser
+  session — an earlier version launched a separate session for each half,
+  which roughly doubled runtime and doubled the odds of the browser closing
+  mid-run. If you see a "Target page, context or browser has been closed"
+  error, confirm you're not on that earlier version (`shipmentToRequests`
+  in a stack trace is the tell).
+
 To re-verify after a UI change:
 
 ```bash
@@ -172,8 +246,9 @@ BROWSER_MODE=headed SLOW_MO=400 npm run print -- --sku YOUR-SKU --qty 1 --dry-ru
 
 ## Notes
 
-- One browser session is reused for a whole batch; a failing SKU is recorded and
-  the run continues.
+- One browser session is reused for a whole batch — including `--shipment`,
+  where reading the shipment and printing its labels share the same session;
+  a failing SKU is recorded and the run continues.
 - Automating Seller Central is subject to Amazon's terms — keep the pace human,
   don't run it as a scraper, and expect occasional bot checks that need a headed
   window.

@@ -11,6 +11,7 @@
     "login": "tsx src/cli.ts login",
     "print": "tsx src/cli.ts print",
     "list": "tsx src/cli.ts list",
+    "shipment": "tsx src/cli.ts shipment",
     "typecheck": "tsc --noEmit",
     "postinstall": "playwright install chromium"
   },
