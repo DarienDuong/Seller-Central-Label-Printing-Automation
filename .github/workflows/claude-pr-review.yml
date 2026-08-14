@@ -9,12 +9,19 @@ name: Claude PR Review
 #     instead, swap the `anthropic_api_key:` input below for
 #     `claude_code_oauth_token:` — setting that secret alone does nothing.
 #
-# Findings are posted through `gh`, which authenticates with the GH_TOKEN
-# below. That should attribute them to github-actions[bot] — UNVERIFIED until
-# the first live run, since claude-code-action may instead hand `gh` a Claude
-# GitHub App installation token, which would post as claude[bot]. The same
-# caveat is written up at length in claude-pr-reply.yml, where the answer also
-# determines whether that workflow can loop.
+# Findings are posted through `gh`, but confirmed on PR #10's live smoke test
+# that this attributes them to claude[bot], not the job's GITHUB_TOKEN
+# identity (github-actions[bot]) — claude-code-action authenticates `gh` with
+# its own GitHub App installation token. That comment then re-triggers
+# claude-pr-reply.yml, which is where this actually matters; see the loop
+# analysis written up at length there.
+#
+# claude-code-action also refuses by default to run at all when the
+# triggering actor (whoever pushed/opened the PR) is a bot — PR #10 hit this
+# directly on the reply side ("Workflow initiated by non-human actor").
+# allowed_bots: "*" opts back in below, same reasoning as claude-pr-reply.yml:
+# a lot of this repo's PR traffic is itself bot-authored, and that's exactly
+# the traffic this workflow exists to review.
 #
 # This repo is PUBLIC, so `pull_request` runs from a fork get no secrets and a
 # read-only token. Those PRs are skipped rather than allowed to fail with an
@@ -53,6 +60,9 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Required — see the note above. Without this, claude-code-action
+          # hard-fails whenever a PR was opened/pushed by a bot actor.
+          allowed_bots: "*"
           # Scoped to the exact verbs the prompt uses. A bare Bash(gh:*) would
           # also permit `gh pr close`, `gh pr merge`, `gh workflow run` etc.,
           # which matters because this run reads attacker-supplied text (PR
