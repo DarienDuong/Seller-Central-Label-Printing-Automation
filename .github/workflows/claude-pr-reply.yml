@@ -11,19 +11,25 @@ name: Claude PR Comment Reply
 # so an author-type filter would skip most of the pushback this workflow
 # exists to answer.
 #
-# Loop safety instead rests on: the prompt tells Claude to post via `gh`,
-# which authenticates with the GH_TOKEN below (the workflow's own
-# GITHUB_TOKEN, attributed to github-actions[bot]), and GitHub Actions does
-# not let a GITHUB_TOKEN-authored event start a new workflow run. So this
-# workflow's own replies should not re-trigger it.
+# CONFIRMED on PR #10's live smoke test: claude-code-action posts through its
+# own GitHub App installation token, not the job's GITHUB_TOKEN — replies land
+# as claude[bot], not github-actions[bot]. That comment DID start a new
+# workflow run (this one), so the GITHUB_TOKEN-loop-safety theory this comment
+# used to state was wrong. What actually stops the loop is two layers:
 #
-# UNVERIFIED, confirm on the first live run: that claude-code-action doesn't
-# hand `gh` a Claude GitHub App installation token instead, which would post
-# as claude[bot] — an app-token-authored comment CAN start a new run, which
-# would mean a reply loop. Belt-and-suspenders, the prompt below also bails
-# if the comment it's answering was posted by a bot it recognises as itself.
-# If the first run shows replies landing as claude[bot], add
-# `if: github.event.comment.user.login != 'claude[bot]'` to the job.
+# 1. claude-code-action refuses by default to act on a run triggered by a bot
+#    actor at all — PR #10 hit exactly this: "Action failed with error:
+#    Workflow initiated by non-human actor: claude (type: Bot). Add bot to
+#    allowed_bots list or use '*' to allow all bots." `allowed_bots: "*"`
+#    below opts back in, since (as noted below) filtering out bot actors is
+#    exactly what we don't want here — but it means this workflow now DOES
+#    run every time claude-pr-review.yml posts a finding, before the prompt
+#    even starts.
+# 2. Once running, the prompt's own check (below) reads who posted the
+#    comment it's replying to and exits without posting if that's
+#    github-actions[bot] or claude[bot] — i.e. itself. This is the layer that
+#    actually prevents an infinite loop; #1 just lets the run far enough to
+#    reach it.
 #
 # The prompt also tells Claude to no-op on non-substantive replies, so it
 # isn't answering every "thanks" either. Note the no-op is decided inside the
@@ -60,6 +66,11 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Required — see the loop-safety note above. Without this,
+          # claude-code-action hard-fails (exit 1) whenever the triggering
+          # comment was itself posted by a bot, which on this repo is most of
+          # them, including claude-pr-review.yml's own findings.
+          allowed_bots: "*"
           # Scoped to the exact verbs the prompt uses. A bare Bash(gh:*) would
           # also permit `gh pr close`, `gh pr merge`, `gh workflow run` etc.,
           # which matters a lot here: this run's whole job is to read a comment
