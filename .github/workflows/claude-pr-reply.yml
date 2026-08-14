@@ -6,16 +6,27 @@ name: Claude PR Comment Reply
 # reasoning if the pushback holds up, or explaining concretely why the
 # finding still stands if it doesn't.
 #
-# No author-type guard is needed to prevent a self-reply loop: every comment
-# this workflow posts goes through GH_TOKEN (the workflow's own GITHUB_TOKEN,
-# attributed to github-actions[bot]), and GitHub Actions never lets a
-# GITHUB_TOKEN-authored event trigger a new workflow run — that's a platform
-# security feature, not something this workflow has to enforce itself. That
-# means an author-type filter here would only ever block *other* bots'
-# legitimate replies, which is exactly the behavior we don't want (many PRs
-# and review comments in this repo are themselves bot-authored). The prompt
-# below still tells Claude to no-op on non-substantive replies, so it isn't
-# replying to every "thanks" either.
+# There is deliberately no `if: ...user.type != 'Bot'` guard on the job.
+# Much of this repo's PR and review-comment traffic is itself bot-authored,
+# so an author-type filter would skip most of the pushback this workflow
+# exists to answer.
+#
+# Loop safety instead rests on: the prompt tells Claude to post via `gh`,
+# which authenticates with the GH_TOKEN below (the workflow's own
+# GITHUB_TOKEN, attributed to github-actions[bot]), and GitHub Actions does
+# not let a GITHUB_TOKEN-authored event start a new workflow run. So this
+# workflow's own replies should not re-trigger it.
+#
+# UNVERIFIED, confirm on the first live run: that claude-code-action doesn't
+# hand `gh` a Claude GitHub App installation token instead, which would post
+# as claude[bot] — an app-token-authored comment CAN start a new run, which
+# would mean a reply loop. Belt-and-suspenders, the prompt below also bails
+# if the comment it's answering was posted by a bot it recognises as itself.
+# If the first run shows replies landing as claude[bot], add
+# `if: github.event.comment.user.login != 'claude[bot]'` to the job.
+#
+# The prompt also tells Claude to no-op on non-substantive replies, so it
+# isn't answering every "thanks" either.
 #
 # Requires the same GitHub App + ANTHROPIC_API_KEY secret as claude-pr-review.yml.
 on:
@@ -38,18 +49,22 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Read/Grep/Glob so it can check the reply's claims against the real
+          # files; Write so it can build the JSON payload step 4 posts.
           claude_args: >-
             --max-turns 20
-            --allowedTools "Bash(gh:*),Bash(git:*)"
+            --allowedTools "Bash(gh:*),Bash(git:*),Read,Grep,Glob,Write"
           prompt: |
             Someone just posted comment id ${{ github.event.comment.id }} on PR
             #${{ github.event.pull_request.number }} in ${{ github.repository }}, replying inside a
             review-comment thread. The commenter may be a human or a bot — treat either the same way,
             engaging with what they actually wrote.
 
-            First, check who posted it (`gh api repos/${{ github.repository }}/pulls/comments/${{ github.event.comment.id }}`):
-            if the author is `github-actions[bot]`, it's a comment this same workflow posted — do nothing
-            and exit, there's nothing to reply to.
+            First, check who posted it (`gh api repos/${{ github.repository }}/pulls/comments/${{ github.event.comment.id }}`
+            — note the id goes on `/pulls/comments/<id>`, NOT `/pulls/<pr>/comments/<id>`, which 404s):
+            if the author is `github-actions[bot]` or `claude[bot]`, this is a comment you posted
+            yourself — do nothing and exit. Never reply to your own comment, whichever identity it
+            was posted under.
 
             Otherwise, only act if the reply is substantively engaging with a review finding — arguing
             it's wrong, explaining a fix, or asking a technical question about it. If it's unrelated
@@ -74,5 +89,11 @@ jobs:
                  wrong. It is also fine to hold your ground. Do not default to agreement to be polite, and
                  do not manufacture disagreement to seem thorough — ground the decision in what the code
                  actually does.
-            4. Post your reply as a new comment in the same thread (not a new top-level comment):
-               `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments -X POST -f body="..." -f in_reply_to=<root_comment_id>`
+            4. Post your reply as a new comment in the same thread (not a new top-level comment).
+               Write the payload to a JSON file and pass it with --input:
+                 `{"body": "<your reply>", "in_reply_to": <root_comment_id as a number>}`
+                 `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments -X POST --input payload.json`
+               Use this JSON form rather than `-f in_reply_to=...`: `-f` sends every value as a
+               string, and this endpoint wants `in_reply_to` as a number. Do not mix `--input` with
+               `-f`/`-F` on the same call — that fails schema validation with
+               "No subschema in oneOf matched".

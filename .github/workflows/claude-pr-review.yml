@@ -1,9 +1,16 @@
 name: Claude PR Review
 
 # Runs an automated code review as soon as a PR is opened or updated.
+# Draft PRs are skipped until they're marked ready for review.
+#
 # Requires:
 #   - The Claude GitHub App installed on this repo (https://github.com/apps/claude)
-#   - Secret ANTHROPIC_API_KEY (or CLAUDE_CODE_OAUTH_TOKEN) set on the repo
+#   - Secret ANTHROPIC_API_KEY set on the repo. To use a subscription token
+#     instead, swap the `anthropic_api_key:` input below for
+#     `claude_code_oauth_token:` — setting that secret alone does nothing.
+#
+# Findings are posted with GH_TOKEN (github-actions[bot]). Its review comments
+# are what claude-pr-reply.yml answers when a human or bot pushes back.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -26,9 +33,11 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Read/Grep/Glob so it can read CLAUDE.md and the code around each
+          # hunk (step 2); Write so it can build the review payload (step 5).
           claude_args: >-
             --max-turns 30
-            --allowedTools "Bash(gh:*),Bash(git:*),Bash(python3:*)"
+            --allowedTools "Bash(gh:*),Bash(git:*),Read,Grep,Glob,Write"
           prompt: |
             Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
             Challenge the PR — don't rubber-stamp it. Look for genuine correctness bugs first, then
