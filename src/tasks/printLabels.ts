@@ -44,6 +44,15 @@ export async function printLabels(
     for (const group of groupByFormat(requests)) {
       const skus = group.map((r) => r.sku);
       const label = `${skus.join(', ')} (${skus.length} SKU${skus.length === 1 ? '' : 's'})`;
+      // Tracks which SKUs in this group already have a result, so the catch
+      // below (which fires on any throw in this group, including one from
+      // sendToPrinter) can't re-record a SKU that was already marked
+      // 'skipped' or 'downloaded'/'printed' earlier in the same iteration.
+      const recordedInGroup = new Set<string>();
+      const record = (result: LabelResult) => {
+        recordedInGroup.add(result.sku);
+        results.push(result);
+      };
 
       try {
         log.step(`Labeling ${label}`);
@@ -53,7 +62,7 @@ export async function printLabels(
         const found = group.filter((r) => rendered.has(r.sku));
         const missing = group.filter((r) => !rendered.has(r.sku));
         for (const req of missing) {
-          results.push({ sku: req.sku, status: 'skipped', message: 'SKU not found on Print Item Labels page' });
+          record({ sku: req.sku, status: 'skipped', message: 'SKU not found on Print Item Labels page' });
           log.warn(`Skipped ${req.sku}: not found`);
         }
         if (found.length === 0) continue;
@@ -69,18 +78,34 @@ export async function printLabels(
         await download.saveAs(pdfPath);
         log.done(`Saved ${pdfPath}`);
 
-        for (const req of found) {
-          if (options.dryRun) {
-            results.push({ sku: req.sku, status: 'downloaded', pdfPath, message: 'dry run' });
-          } else {
+        // One PDF covers the whole group — print it once, not once per SKU
+        // in the loop below. sendToPrinter used to be called per-SKU with
+        // the same pdfPath, so an N-SKU group silently printed N copies of
+        // the combined PDF (a 12-SKU shipment sent an 82-page PDF 12 times).
+        if (options.dryRun) {
+          for (const req of found) record({ sku: req.sku, status: 'downloaded', pdfPath, message: 'dry run' });
+        } else {
+          // The PDF is already saved at this point regardless of what
+          // happens next, so a printer failure is recorded per-SKU as
+          // 'print-failed' — pdfPath is kept, unlike the outer catch below,
+          // which has no PDF to report and would also re-record the
+          // 'skipped' SKUs above. 'print-failed' (not 'downloaded') is what
+          // keeps this a command failure — see cli.ts's exit code check.
+          try {
             const printed = await sendToPrinter(pdfPath);
-            results.push({ sku: req.sku, status: printed ? 'printed' : 'downloaded', pdfPath });
+            for (const req of found) record({ sku: req.sku, status: printed ? 'printed' : 'downloaded', pdfPath });
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            log.error(`Saved ${pdfPath} but failed to send it to the printer: ${message}`);
+            for (const req of found) record({ sku: req.sku, status: 'print-failed', pdfPath, message });
           }
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         log.error(`Failed ${label}: ${message}`);
-        for (const req of group) results.push({ sku: req.sku, status: 'failed', message });
+        for (const req of group) {
+          if (!recordedInGroup.has(req.sku)) results.push({ sku: req.sku, status: 'failed', message });
+        }
       }
     }
   } finally {

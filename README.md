@@ -12,7 +12,8 @@ structured input (`--file products.json`) and can emit structured output
 
 - Node **22** (an `.nvmrc` is included — run `nvm use`)
 - A Seller Central account with FBA/label permissions
-- Optional: a CUPS printer for auto-printing (`lpstat -p`)
+- Optional: a printer for auto-printing — CUPS on macOS/Linux (`lpstat -p`),
+  any installed printer on Windows (see [Printing on Windows](#printing-on-windows))
 
 ## Setup
 
@@ -152,8 +153,107 @@ Flags:
 | `--dry-run` | Download only, never send to the printer |
 | `--headed` | Force a visible browser window |
 | `--json` | Machine-readable output (for skill use) |
-| `--printers` | List CUPS printers and exit |
+| `--printers` | List known printers and exit |
 | `--help` | Show usage |
+
+## Printing on Windows
+
+The warehouse printer is on a Windows PC, so `src/printer.ts` branches by
+platform — same `PRINTER_NAME` in `.env`, same CLI, no code changes needed
+either side. But the mechanism is very different, because Windows has no
+CLI equivalent of `lp -d <printer>`:
+
+- There's no built-in way to send a PDF to a *named* printer from the
+  command line. The only printer-agnostic route is the registered PDF
+  handler's "Print" shell verb (`Start-Process -Verb Print`), and that verb
+  always prints to the current **default** printer — it doesn't take a
+  printer name.
+- So each print job: reads the current Windows default printer, flips the
+  default to `PRINTER_NAME` (via `Win32_Printer.SetDefaultPrinter` over
+  PowerShell/CIM), fires the Print verb once per copy, **waits for the job
+  to actually appear in that printer's queue**, then restores the original
+  default.
+- The wait matters. `Start-Process -Verb Print` returns as soon as the
+  viewer *launches*, but the viewer reads the default printer when it
+  *submits* — potentially many seconds later on an Edge cold start.
+  Restoring the default on a fixed timer instead would send the labels to
+  whatever printer was default before, while still reporting success.
+- `PRINTER_NAME` is resolved against the installed printers *before* the
+  default is touched at all — a name that matches nothing fails loudly
+  without changing anything on the machine, rather than quietly printing to
+  the existing default. Setting the default is separately verified by
+  reading it back afterward, which catches the (rarer) case of the default
+  changing out from under the run between the set and the check.
+- This needs a PDF viewer with a registered Print verb — Edge (installed on
+  every Windows box) or Acrobat both work.
+- `--printers` on Windows lists `Win32_Printer` names instead of CUPS
+  queues.
+
+This flips the machine's default printer for the duration of the print
+call, and restores it afterward. Two cases where it doesn't get restored:
+
+- The process is killed mid-print — the default may be left pointing at
+  `PRINTER_NAME` until the next run (or you fix it in Settings).
+- The machine had **no** default printer to begin with (common on freshly
+  imaged or kiosk-style PCs). Windows has no "unset the default" call, so
+  `PRINTER_NAME` is left as the default and the run logs a warning saying
+  so.
+
+It hasn't yet been verified against a real Windows box + physical printer —
+the code paths were written and typechecked but not run live; treat the
+first real run as the actual test and watch it happen (`--dry-run` first,
+or watch the print job appear in the print queue).
+
+### Setting `PRINTER_NAME` on Windows
+
+`PRINTER_NAME` has to match a name Windows itself knows about — the same
+string shown in **Settings → Bluetooth & devices → Printers & scanners**, or
+from PowerShell:
+
+```powershell
+Get-CimInstance -ClassName Win32_Printer | Select-Object Name
+```
+
+```
+Name
+----
+Zebra ZD420 (Warehouse)
+Microsoft Print to PDF
+HP LaserJet M110
+```
+
+or, once the repo is set up, the same list of names with no table header:
+
+```bash
+npm run print -- --printers
+```
+
+```
+Zebra ZD420 (Warehouse)
+Microsoft Print to PDF
+HP LaserJet M110
+```
+
+Copy the exact printer name (including spaces/parens) into `.env`:
+
+```bash
+PRINTER_NAME=Zebra ZD420 (Warehouse)
+```
+
+Then verify it end to end — `--dry-run` first to confirm the PDF itself
+looks right, then a real run for one SKU/qty 1 to confirm the job actually
+reaches that printer:
+
+```bash
+npm run print -- --sku ABC-123 --qty 1 --dry-run
+npm run print -- --sku ABC-123 --qty 1
+```
+
+If `PRINTER_NAME` doesn't match any `Win32_Printer` name, the run errors out
+before touching the machine's default printer at all — it will not silently
+fall back to whatever printer happened to be default. (The match is
+case-insensitive, so a case difference between `.env` and Windows is fine;
+it just has to be the same name.)
 
 ## Where the PDFs go
 
@@ -179,7 +279,7 @@ npm run list -- --search "coffee"
 | [src/pages/shipmentPage.ts](src/pages/shipmentPage.ts) | Send to Amazon content step — reads a shipment's SKUs and unit counts |
 | [src/tasks/printLabels.ts](src/tasks/printLabels.ts) | Batch flow: group by format → print-labels page → set quantities → submit → save |
 | [src/tasks/shipmentLabels.ts](src/tasks/shipmentLabels.ts) | Turns a shipment workflow into label requests |
-| [src/printer.ts](src/printer.ts) | CUPS `lp` handoff |
+| [src/printer.ts](src/printer.ts) | Printer handoff — CUPS `lp` on macOS/Linux, PowerShell/Win32_Printer on Windows |
 
 ## How it works
 
