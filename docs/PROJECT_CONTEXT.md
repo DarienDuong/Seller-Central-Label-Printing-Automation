@@ -220,14 +220,24 @@ but surfaced by the Windows work adding new throw sites — e.g. a stale
 caught by the group-wide `catch`, which re-recorded every SKU in the group as
 `'failed'`, clobbering SKUs already recorded `'skipped'` earlier in the same
 group and discarding `pdfPath` for SKUs whose PDF was actually saved fine.
-Now wrapped in its own try/catch so a printer failure records `'downloaded'`
-+ `pdfPath` + the error, and each group tracks which SKUs already have a
-result so the outer catch can't re-record them.
+Now wrapped in its own try/catch so a printer failure records `pdfPath` +
+the error instead of losing them. That failure is its own status —
+`'print-failed'`, added to `LabelResult` — not `'downloaded'`: an earlier
+version of this fix recorded it as `'downloaded'`, which preserved
+`pdfPath` but also meant `cli.ts`'s exit-code check (`status === 'failed'`)
+no longer caught it, so a printer misconfiguration silently exited 0.
+Review caught that regression; `'print-failed'` is checked alongside
+`'failed'` in `cli.ts`, and `'downloaded'` now means only "printing was
+never attempted" (dry run, or `PRINTER_NAME` unset) — each group also
+tracks which SKUs already have a result so the outer catch can't
+re-record them.
 
-PR #8 has been through three rounds of automated review (all findings
-confirmed and fixed, no pushback needed) — see the PR thread for the full
-list. Nothing outstanding on the review side; the only gate left is a real
-Windows run.
+PR #8 has been through four rounds of automated review. Most findings were
+confirmed and fixed outright; one (the `'downloaded'`-vs-exit-code point
+above) was genuine pushback that changed the design mid-PR rather than a
+rubber-stamped fix — worth knowing before assuming everything landed on the
+first pass. See the PR thread for the full list. Nothing outstanding on the
+review side as of this commit; the only gate left is a real Windows run.
 
 Still open: setup docs need `nvm-windows` notes — it ignores `.nvmrc`.
 

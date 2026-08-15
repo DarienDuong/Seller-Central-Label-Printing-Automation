@@ -92,8 +92,14 @@ export async function printLabels(
           // 'skipped' SKUs above. 'print-failed' (not 'downloaded') is what
           // keeps this a command failure — see cli.ts's exit code check.
           try {
-            const printed = await sendToPrinter(pdfPath);
-            for (const req of found) record({ sku: req.sku, status: printed ? 'printed' : 'downloaded', pdfPath });
+            const result = await sendToPrinter(pdfPath);
+            for (const req of found) {
+              record(
+                result.sent
+                  ? { sku: req.sku, status: 'printed', pdfPath, ...(result.unconfirmed ? { message: result.unconfirmed } : {}) }
+                  : { sku: req.sku, status: 'downloaded', pdfPath },
+              );
+            }
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             log.error(`Saved ${pdfPath} but failed to send it to the printer: ${message}`);

@@ -1,20 +1,34 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { platform } from 'node:os';
+import { basename } from 'node:path';
 import { config } from './config.js';
 import { log } from './logger.js';
 
 const run = promisify(execFile);
 const isWindows = platform() === 'win32';
 
+export interface SendResult {
+  /** false only means PRINTER_NAME is unset — the PDF was left for a human. */
+  sent: boolean;
+  /**
+   * Set when `sent` is true but the handoff couldn't be confirmed — the job
+   * was never actually observed reaching the printer's queue. Undefined on
+   * a confirmed send (always on CUPS; on Windows, whenever the job was
+   * seen). Callers should treat this as "printed, but verify" rather than
+   * a plain success.
+   */
+  unconfirmed?: string;
+}
+
 /**
  * Send a PDF to a printer. No-op when PRINTER_NAME is unset, which is the
  * safe default: the PDF is still on disk for a human to review.
  */
-export async function sendToPrinter(pdfPath: string, copies = 1): Promise<boolean> {
+export async function sendToPrinter(pdfPath: string, copies = 1): Promise<SendResult> {
   if (!config.printerName) {
     log.info(`PRINTER_NAME not set — leaving PDF at ${pdfPath}`);
-    return false;
+    return { sent: false };
   }
 
   return isWindows ? sendToPrinterWindows(pdfPath, copies) : sendToPrinterCups(pdfPath, copies);
@@ -27,12 +41,12 @@ export async function listPrinters(): Promise<string[]> {
 
 // --- macOS / Linux: CUPS -----------------------------------------------
 
-async function sendToPrinterCups(pdfPath: string, copies: number): Promise<boolean> {
+async function sendToPrinterCups(pdfPath: string, copies: number): Promise<SendResult> {
   const args = ['-d', config.printerName, '-n', String(copies), pdfPath];
   log.step(`lp ${args.join(' ')}`);
   const { stdout } = await run('lp', args);
   log.done(`Queued: ${stdout.trim()}`);
-  return true;
+  return { sent: true };
 }
 
 async function listPrintersCups(): Promise<string[]> {
@@ -152,46 +166,66 @@ async function queryPrintJobIds(printerName: string): Promise<Set<string>> {
 }
 
 /**
- * Wait for a job whose id isn't in `baselineIds` to appear in the target
- * printer's queue. The whole wait loop runs as a *single* PowerShell process
- * (`Start-Sleep` inside the script) rather than one process per poll tick —
- * spawning `powershell.exe` per tick made the real poll period several times
- * `JOB_POLL_INTERVAL_MS` once PowerShell startup and the PrintManagement
- * module's autoload are counted on every spawn, which widens exactly the
- * blind window this function exists to shrink: a one-page label job can
- * spool and clear the queue between ticks.
+ * Wait for *our* job to appear in the target printer's queue. The whole wait
+ * loop runs as a *single* PowerShell process (`Start-Sleep` inside the
+ * script) rather than one process per poll tick — spawning `powershell.exe`
+ * per tick made the real poll period several times `JOB_POLL_INTERVAL_MS`
+ * once PowerShell startup and the PrintManagement module's autoload are
+ * counted on every spawn, which widens exactly the blind window this
+ * function exists to shrink: a one-page label job can spool and clear the
+ * queue between ticks.
  *
- * Returns false only when nothing new ever appeared. A transient failure to
- * read the queue mid-poll is swallowed inside the script and treated as an
- * inconclusive tick, not a hard stop — `queryPrintJobIds` already proved the
- * queue was readable before this function was called.
+ * "Ours" is checked by `DocumentName` matching the PDF's file name, not just
+ * "any id outside the baseline" — on a shared printer, a concurrent job from
+ * another machine can land in the queue during the same window (Edge is
+ * still cold-starting, a coworker's job arrives first), satisfy an
+ * any-new-id test, and release the default printer before our job actually
+ * submits. If no name match ever appears before the deadline but *some* new
+ * job did, that's reported as a fallback match — `DocumentName` isn't
+ * guaranteed to equal the file name for every PDF handler, so treating an
+ * unmatched name as outright failure would trade one false negative for
+ * another.
+ *
+ * Returns false only when nothing new appeared at all. A transient failure
+ * to read the queue mid-poll is swallowed inside the script and treated as
+ * an inconclusive tick, not a hard stop — `queryPrintJobIds` already proved
+ * the queue was readable before this function was called.
  */
-async function waitForPrintJob(printerName: string, baselineIds: Set<string>): Promise<boolean> {
+async function waitForPrintJob(printerName: string, baselineIds: Set<string>, pdfPath: string): Promise<boolean> {
   const script = `
     $deadline = (Get-Date).AddMilliseconds([double]$env:SC_TIMEOUT_MS)
     $baseline = @($env:SC_BASELINE -split ',' | Where-Object { $_ -ne '' })
+    $docName = $env:SC_DOC_NAME
+    $sawForeignOnly = $false
     while ((Get-Date) -lt $deadline) {
       try {
-        $ids = @(Get-PrintJob -PrinterName $env:SC_PRINTER -ErrorAction Stop | Select-Object -ExpandProperty Id)
-        if (@($ids | Where-Object { $baseline -notcontains $_ }).Count -gt 0) { Write-Output 'FOUND'; exit 0 }
+        $newJobs = @(Get-PrintJob -PrinterName $env:SC_PRINTER -ErrorAction Stop | Where-Object { $baseline -notcontains $_.Id })
+        if (@($newJobs | Where-Object { $_.DocumentName -eq $docName }).Count -gt 0) { Write-Output 'FOUND'; exit 0 }
+        if ($newJobs.Count -gt 0) { $sawForeignOnly = $true }
       } catch {}
       Start-Sleep -Milliseconds ([int]$env:SC_INTERVAL_MS)
     }
-    Write-Output 'TIMEOUT'
+    if ($sawForeignOnly) { Write-Output 'FOUND_UNMATCHED_NAME' } else { Write-Output 'TIMEOUT' }
   `;
   const result = await runPowerShell(script, {
     SC_PRINTER: printerName,
     SC_TIMEOUT_MS: String(JOB_POLL_TIMEOUT_MS),
     SC_INTERVAL_MS: String(JOB_POLL_INTERVAL_MS),
     SC_BASELINE: [...baselineIds].join(','),
+    SC_DOC_NAME: basename(pdfPath),
   });
-  return result === 'FOUND';
+  return result === 'FOUND' || result === 'FOUND_UNMATCHED_NAME';
 }
 
-async function sendToPrinterWindows(pdfPath: string, copies: number): Promise<boolean> {
+async function sendToPrinterWindows(pdfPath: string, copies: number): Promise<SendResult> {
   const target = await resolvePrinterWindows(config.printerName);
   const previousDefault = await getDefaultPrinterWindows();
   let changedDefault = false;
+  // Reasons the handoff couldn't be confirmed for one or more copies. Kept
+  // separate from a throw: an unconfirmed handoff is not proof of failure
+  // (see waitForPrintJob's doc comment), so it's surfaced to the caller as
+  // data on a successful return rather than raised as an error.
+  const unconfirmedReasons: string[] = [];
 
   try {
     log.step(`Setting Windows default printer to ${target}`);
@@ -213,10 +247,11 @@ async function sendToPrinterWindows(pdfPath: string, copies: number): Promise<bo
       try {
         baselineIds = await queryPrintJobIds(target);
       } catch (err) {
-        log.warn(
+        const reason =
           `Can't read "${target}"'s print queue (${errText(err)}), so the job can't be confirmed — ` +
-            `waiting ${HANDOFF_FALLBACK_MS / 1000}s for the PDF viewer to submit it.`,
-        );
+          `waited ${HANDOFF_FALLBACK_MS / 1000}s for the PDF viewer to submit it instead of polling.`;
+        log.warn(reason);
+        unconfirmedReasons.push(reason);
       }
 
       await runPowerShell('Start-Process -FilePath $env:SC_PDF_PATH -Verb Print', { SC_PDF_PATH: pdfPath });
@@ -226,19 +261,23 @@ async function sendToPrinterWindows(pdfPath: string, copies: number): Promise<bo
         // printer for a fixed interval instead — still the whole point, since
         // restoring it early is what sends labels to the wrong printer.
         await new Promise((resolve) => setTimeout(resolve, HANDOFF_FALLBACK_MS));
-      } else if (!(await waitForPrintJob(target, baselineIds))) {
+      } else if (!(await waitForPrintJob(target, baselineIds, pdfPath))) {
         // Inconclusive, not proof of failure: a one-page label can spool and
         // clear the queue before the next poll. Warn rather than fail the
         // SKU — a false failure invites a duplicate reprint of the batch.
-        log.warn(
-          `Never saw a new job appear in "${target}"'s queue within ${JOB_POLL_TIMEOUT_MS / 1000}s. ` +
-            `It may have printed and cleared too quickly to observe. If nothing came out, the PDF is ` +
-            `still at ${pdfPath} — check that a PDF viewer with a Print action is installed (Edge or Acrobat).`,
-        );
+        const reason =
+          `Never saw a new job appear in "${target}"'s queue within ${JOB_POLL_TIMEOUT_MS / 1000}s — ` +
+          `the handoff was not confirmed. It may have printed and cleared too quickly to observe; if ` +
+          `nothing came out, the PDF is still at ${pdfPath} — check that a PDF viewer with a Print ` +
+          `action is installed (Edge or Acrobat).`;
+        log.warn(reason);
+        unconfirmedReasons.push(reason);
       }
     }
     log.done(`Sent ${copies} job(s) to ${target}`);
-    return true;
+    return unconfirmedReasons.length > 0
+      ? { sent: true, unconfirmed: unconfirmedReasons.join(' ') }
+      : { sent: true };
   } finally {
     if (changedDefault) await restoreDefaultPrinterWindows(previousDefault, target);
   }
