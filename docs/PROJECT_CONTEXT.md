@@ -1,8 +1,8 @@
 # Project context & status
 
 Handoff doc for starting a fresh Claude Code / Codex session on this repo without
-re-deriving everything. Last updated **2026-08-15** (main @ `5b19906`; open PR #8
-has six commits on top, see below).
+re-deriving everything. Last updated **2026-08-15** (main @ `86efc9c`, which
+merged PR #8 / 4B; **open PR #13** has follow-up fixes on top, see below).
 
 ---
 
@@ -32,26 +32,30 @@ the SP-API just because it'd be easier).
 ## 2. Current status
 
 **Phases 1–3 are done and verified against a live account.** Phase 4 is
-"make it shareable" — Part A is merged, Part B is implemented and awaiting
-live verification + review on an open PR.
+"make it shareable" — Parts A and B are merged into `main`; B has follow-up
+fixes on an open PR, still gated on a real Windows run.
 
 | Phase | Scope | State |
 | --- | --- | --- |
 | 1–3 | login, print by SKU, `--file` batches, `list` inventory | ✅ done, live-verified |
 | 4A | **shipment mode** (`--shipment`) | ✅ done, merged in PR #6 |
-| 4B | **Windows printing support** | 🟡 implemented + typechecked, **open PR #8**, unverified on a real Windows box/printer |
+| 4B | **Windows printing support** | 🟡 merged (PR #8), **open follow-up PR #13**, still unverified on a real Windows box/printer |
 | 4C | **MCP server** | ⬜ not started |
 | 4D | **teammate onboarding docs** | ⬜ not started |
 
 Sequencing 4B/4C/4D was the owner's call: shipment mode first (done), the rest
 after. Confirm with the owner before starting any of C/D.
 
-`main` (`5b19906`) contains Phases 1–3, 4A, and the Claude Code GitHub Actions
-review workflow (PRs #9, #11, #12 — automated PR review, not a project phase).
-**`feat/windows-printing` (PR #8, open) has 4B on top of it** — not yet merged,
-not yet run against a real Windows machine, currently up to date with `main`
-(no rebase needed). Start a fresh session from `main` only if 4B isn't the
-task; otherwise check out/continue that branch.
+`main` (`86efc9c`) contains Phases 1–3, 4A, 4B (PR #8, squash-merged — its
+branch history isn't preserved on `main`, so don't try to rebase onto it
+expecting a fast-forward; cherry-pick instead), and the Claude Code GitHub
+Actions review workflow (PRs #9, #11, #12 — automated PR review, not a
+project phase). **`fix/windows-printing-followups` (PR #13, open)** has
+three review findings from #8 that landed after #8 had already merged —
+job-identity matching in the print-queue poll, surfacing unconfirmed print
+handoffs instead of reporting them as plain success, and this file's own
+accuracy. Start a fresh session from `main` only if 4B isn't the task;
+otherwise check out/continue that branch.
 PR #4 ("Added my print label script in project sub-directory") is still **open**
 and is a stale/superseded PR from before the rewrite — check with the owner
 before touching it.
@@ -187,16 +191,28 @@ default printer to it (`Win32_Printer.SetDefaultPrinter` via PowerShell +
 CIM, read back to confirm), fire `Start-Process -Verb Print` once per copy
 (the registered PDF handler's print verb, which only ever targets the
 default printer), **poll the target printer's job queue** (`Get-PrintJob`,
-by job id, run as a single PowerShell process per wait rather than one
-process per poll tick) until the job actually appears — up to 60s, falling
-back to a fixed 15s hold only if the queue can't be read — then restore the
-previous default printer. `--printers` lists `Win32_Printer` names on
-Windows. Implemented and typechecked on `feat/windows-printing` (**open PR
-#8**) but **not yet run against a real Windows machine with a physical
-printer** — the owner doesn't have warehouse PC access this session. Treat
-the first live run as the real test: use `--dry-run` first, confirm
-`PRINTER_NAME` matches `Get-CimInstance Win32_Printer`, and watch the job
-land in the Windows print queue.
+run as a single PowerShell process per wait rather than one process per poll
+tick) until *our* job appears, then restore the previous default printer.
+"Ours" is matched by `DocumentName` against the PDF's file name (a
+case-insensitive suffix check, not exact equality — some PDF handlers set
+the full path or decorate the name), not just any new job id — an
+any-new-id test let a concurrent job from another machine on a shared
+printer satisfy the wait and release the default early. A name match
+returns immediately; if the deadline passes with new jobs seen but none
+matching by name, or nothing new at all, the send is still reported as
+successful but flagged `unconfirmed` with a reason (not a hard failure — a
+one-page label can spool and clear the queue between polls, and a false
+failure invites a duplicate reprint of the batch). Falls back to a fixed
+15s hold only if the queue can't be read at all. `--printers` lists
+`Win32_Printer` names on Windows. Implemented and typechecked, merged in
+PR #8 with follow-ups in PR #13, but **not yet run against a real Windows
+machine with a physical printer** — the owner doesn't have warehouse PC
+access this session. Treat the first live run as the real test: use
+`--dry-run` first, confirm `PRINTER_NAME` matches `Get-CimInstance
+Win32_Printer`, watch the job land in the Windows print queue, and check
+the logged `Queue check for copy N/M: matched|unmatched|none` line — a
+run that's consistently `unmatched` (not `matched`) means the DocumentName
+suffix check isn't firing on that PDF handler and is worth a follow-up fix.
 
 The fixed-timer design (a flat sleep instead of polling the queue) was
 tried and reverted after review — it raced the async PDF handler and could

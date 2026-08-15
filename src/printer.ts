@@ -180,32 +180,43 @@ async function queryPrintJobIds(printerName: string): Promise<Set<string>> {
  * another machine can land in the queue during the same window (Edge is
  * still cold-starting, a coworker's job arrives first), satisfy an
  * any-new-id test, and release the default printer before our job actually
- * submits. If no name match ever appears before the deadline but *some* new
- * job did, that's reported as a fallback match — `DocumentName` isn't
- * guaranteed to equal the file name for every PDF handler, so treating an
- * unmatched name as outright failure would trade one false negative for
- * another.
+ * submits. The match is a case-insensitive *suffix* check, not exact
+ * equality — some handlers set `DocumentName` to the full path, or decorate
+ * it (Edge-style `name.pdf - Profile 1 - Microsoft Edge`), and an exact `-eq`
+ * would never fire against either.
  *
- * Returns false only when nothing new appeared at all. A transient failure
- * to read the queue mid-poll is swallowed inside the script and treated as
- * an inconclusive tick, not a hard stop — `queryPrintJobIds` already proved
- * the queue was readable before this function was called.
+ * Three outcomes, not two, because "some new job appeared but none matched
+ * our name" is meaningfully different from "nothing new appeared at all" —
+ * the former means the queue and the wait loop are both working, just not
+ * able to prove the new job is ours (a name-matching miss, or a genuine
+ * foreign job); the latter means nothing showed up in the queue at all.
+ * Collapsing them into one boolean is what let a name-matching miss report
+ * plain success with no warning — the caller now gets the distinction and
+ * decides how to log it.
+ *
+ * A transient failure to read the queue mid-poll is swallowed inside the
+ * script and treated as an inconclusive tick, not a hard stop —
+ * `queryPrintJobIds` already proved the queue was readable before this
+ * function was called.
  */
-async function waitForPrintJob(printerName: string, baselineIds: Set<string>, pdfPath: string): Promise<boolean> {
+type JobWaitResult = 'matched' | 'unmatched' | 'none';
+
+async function waitForPrintJob(printerName: string, baselineIds: Set<string>, pdfPath: string): Promise<JobWaitResult> {
   const script = `
     $deadline = (Get-Date).AddMilliseconds([double]$env:SC_TIMEOUT_MS)
     $baseline = @($env:SC_BASELINE -split ',' | Where-Object { $_ -ne '' })
     $docName = $env:SC_DOC_NAME
-    $sawForeignOnly = $false
+    $sawForeign = $false
     while ((Get-Date) -lt $deadline) {
       try {
         $newJobs = @(Get-PrintJob -PrinterName $env:SC_PRINTER -ErrorAction Stop | Where-Object { $baseline -notcontains $_.Id })
-        if (@($newJobs | Where-Object { $_.DocumentName -eq $docName }).Count -gt 0) { Write-Output 'FOUND'; exit 0 }
-        if ($newJobs.Count -gt 0) { $sawForeignOnly = $true }
+        $matched = @($newJobs | Where-Object { $_.DocumentName -and $_.DocumentName.EndsWith($docName, [System.StringComparison]::OrdinalIgnoreCase) })
+        if ($matched.Count -gt 0) { Write-Output 'MATCHED'; exit 0 }
+        if ($newJobs.Count -gt 0) { $sawForeign = $true }
       } catch {}
       Start-Sleep -Milliseconds ([int]$env:SC_INTERVAL_MS)
     }
-    if ($sawForeignOnly) { Write-Output 'FOUND_UNMATCHED_NAME' } else { Write-Output 'TIMEOUT' }
+    if ($sawForeign) { Write-Output 'UNMATCHED' } else { Write-Output 'NONE' }
   `;
   const result = await runPowerShell(script, {
     SC_PRINTER: printerName,
@@ -214,7 +225,9 @@ async function waitForPrintJob(printerName: string, baselineIds: Set<string>, pd
     SC_BASELINE: [...baselineIds].join(','),
     SC_DOC_NAME: basename(pdfPath),
   });
-  return result === 'FOUND' || result === 'FOUND_UNMATCHED_NAME';
+  if (result === 'MATCHED') return 'matched';
+  if (result === 'UNMATCHED') return 'unmatched';
+  return 'none';
 }
 
 async function sendToPrinterWindows(pdfPath: string, copies: number): Promise<SendResult> {
@@ -261,20 +274,47 @@ async function sendToPrinterWindows(pdfPath: string, copies: number): Promise<Se
         // printer for a fixed interval instead — still the whole point, since
         // restoring it early is what sends labels to the wrong printer.
         await new Promise((resolve) => setTimeout(resolve, HANDOFF_FALLBACK_MS));
-      } else if (!(await waitForPrintJob(target, baselineIds, pdfPath))) {
-        // Inconclusive, not proof of failure: a one-page label can spool and
-        // clear the queue before the next poll. Warn rather than fail the
-        // SKU — a false failure invites a duplicate reprint of the batch.
-        const reason =
-          `Never saw a new job appear in "${target}"'s queue within ${JOB_POLL_TIMEOUT_MS / 1000}s — ` +
-          `the handoff was not confirmed. It may have printed and cleared too quickly to observe; if ` +
-          `nothing came out, the PDF is still at ${pdfPath} — check that a PDF viewer with a Print ` +
-          `action is installed (Edge or Acrobat).`;
-        log.warn(reason);
-        unconfirmedReasons.push(reason);
+      } else {
+        const waitResult = await waitForPrintJob(target, baselineIds, pdfPath);
+        // Logged for every branch, including the confirmed one — the first
+        // live Windows run is the actual test of whether DocumentName
+        // matching works at all on that machine's PDF handler, and without
+        // this line 'matched' and a permanently-inert matcher that always
+        // falls through to 'unmatched' both look identical from the outside.
+        log.step(`Queue check for copy ${i + 1}/${copies}: ${waitResult}`);
+
+        if (waitResult === 'unmatched') {
+          // Distinct from 'none': the queue and the poll are both working,
+          // and something new did appear — it just couldn't be tied to this
+          // PDF by name. Could be a genuine foreign job on a shared printer,
+          // or a PDF handler whose DocumentName doesn't resemble the file
+          // name at all, in which case this fires on every run.
+          const reason =
+            `Saw new job(s) appear in "${target}"'s queue, but none matched the file name ` +
+            `"${basename(pdfPath)}" — can't tell ours apart from another job on this printer. ` +
+            `If nothing came out, the PDF is still at ${pdfPath}.`;
+          log.warn(reason);
+          unconfirmedReasons.push(reason);
+        } else if (waitResult === 'none') {
+          // Inconclusive, not proof of failure: a one-page label can spool
+          // and clear the queue before the next poll. Warn rather than fail
+          // the SKU — a false failure invites a duplicate reprint of the batch.
+          const reason =
+            `Never saw a new job appear in "${target}"'s queue within ${JOB_POLL_TIMEOUT_MS / 1000}s — ` +
+            `the handoff was not confirmed. It may have printed and cleared too quickly to observe; if ` +
+            `nothing came out, the PDF is still at ${pdfPath} — check that a PDF viewer with a Print ` +
+            `action is installed (Edge or Acrobat).`;
+          log.warn(reason);
+          unconfirmedReasons.push(reason);
+        }
       }
     }
-    log.done(`Sent ${copies} job(s) to ${target}`);
+
+    if (unconfirmedReasons.length > 0) {
+      log.warn(`Sent ${copies} job(s) to ${target}, but the handoff could not be confirmed for all of them.`);
+    } else {
+      log.done(`Sent ${copies} job(s) to ${target}, confirmed in its print queue.`);
+    }
     return unconfirmedReasons.length > 0
       ? { sent: true, unconfirmed: unconfirmedReasons.join(' ') }
       : { sent: true };
