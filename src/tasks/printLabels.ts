@@ -87,16 +87,17 @@ export async function printLabels(
         } else {
           // The PDF is already saved at this point regardless of what
           // happens next, so a printer failure is recorded per-SKU as
-          // still-downloaded (with pdfPath kept) rather than left to fall
-          // into the outer catch, which has no pdfPath to report and would
-          // also re-record the 'skipped' SKUs above as 'failed'.
+          // 'print-failed' — pdfPath is kept, unlike the outer catch below,
+          // which has no PDF to report and would also re-record the
+          // 'skipped' SKUs above. 'print-failed' (not 'downloaded') is what
+          // keeps this a command failure — see cli.ts's exit code check.
           try {
             const printed = await sendToPrinter(pdfPath);
             for (const req of found) record({ sku: req.sku, status: printed ? 'printed' : 'downloaded', pdfPath });
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             log.error(`Saved ${pdfPath} but failed to send it to the printer: ${message}`);
-            for (const req of found) record({ sku: req.sku, status: 'downloaded', pdfPath, message });
+            for (const req of found) record({ sku: req.sku, status: 'print-failed', pdfPath, message });
           }
         }
       } catch (err) {

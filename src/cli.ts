@@ -129,7 +129,7 @@ async function main(): Promise<number> {
       } else {
         for (const r of results) log.info(`${r.sku}: ${r.status}${r.message ? ` — ${r.message}` : ''}`);
       }
-      return results.some((r) => r.status === 'failed') ? 1 : 0;
+      return results.some((r) => r.status === 'failed' || r.status === 'print-failed') ? 1 : 0;
     }
 
     case 'shipment': {

@@ -1,8 +1,8 @@
 # Project context & status
 
 Handoff doc for starting a fresh Claude Code / Codex session on this repo without
-re-deriving everything. Last updated **2026-08-14** (main @ `6e98828`; open PR #8
-adds two more commits on top, see below).
+re-deriving everything. Last updated **2026-08-15** (main @ `5b19906`; open PR #8
+has six commits on top, see below).
 
 ---
 
@@ -46,9 +46,11 @@ live verification + review on an open PR.
 Sequencing 4B/4C/4D was the owner's call: shipment mode first (done), the rest
 after. Confirm with the owner before starting any of C/D.
 
-`main` (`6e98828`) contains Phases 1–3 and 4A. **`feat/windows-printing`
-(PR #8, open) has 4B on top of it** — not yet merged, not yet run against a
-real Windows machine. Start a fresh session from `main` only if 4B isn't the
+`main` (`5b19906`) contains Phases 1–3, 4A, and the Claude Code GitHub Actions
+review workflow (PRs #9, #11, #12 — automated PR review, not a project phase).
+**`feat/windows-printing` (PR #8, open) has 4B on top of it** — not yet merged,
+not yet run against a real Windows machine, currently up to date with `main`
+(no rebase needed). Start a fresh session from `main` only if 4B isn't the
 task; otherwise check out/continue that branch.
 PR #4 ("Added my print label script in project sub-directory") is still **open**
 and is a stale/superseded PR from before the rewrite — check with the owner
@@ -86,10 +88,11 @@ Common flags: `--dry-run` (download PDF, never print), `--headed`, `--json`,
 | `src/pages/shipmentPage.ts` | Send to Amazon content step — scrapes a shipment's SKUs/units |
 | `src/tasks/printLabels.ts` | group by format → print page → set quantities → submit → save |
 | `src/tasks/shipmentLabels.ts` | workflow id → `LabelRequest[]`, and the combined print path |
-| `src/printer.ts` | CUPS `lp` handoff |
+| `src/printer.ts` | Printer handoff — CUPS `lp`/`lpstat` on macOS/Linux, PowerShell/`Win32_Printer` on Windows (4B, PR #8, unmerged) |
 | `src/types.ts` | `LabelRequest`, `LabelResult`, `ShipmentItem`, `InventoryItem`, `LabelFormat` |
 
-~1,140 lines of TypeScript total. Small enough to read end to end.
+~1,400 lines of TypeScript total (on `feat/windows-printing`; ~1,140 on
+`main` before 4B). Small enough to read end to end.
 
 ---
 
@@ -210,6 +213,21 @@ silently occurring:
   freshly imaged / kiosk-style PCs), there's no "unset the default" API to
   restore to — `PRINTER_NAME` is left as the new default even after a clean
   run, with a warning logged.
+
+Also fixed along the way, in `src/tasks/printLabels.ts` (not Windows-specific,
+but surfaced by the Windows work adding new throw sites — e.g. a stale
+`PRINTER_NAME` — inside the print call): `sendToPrinter`'s failure used to be
+caught by the group-wide `catch`, which re-recorded every SKU in the group as
+`'failed'`, clobbering SKUs already recorded `'skipped'` earlier in the same
+group and discarding `pdfPath` for SKUs whose PDF was actually saved fine.
+Now wrapped in its own try/catch so a printer failure records `'downloaded'`
++ `pdfPath` + the error, and each group tracks which SKUs already have a
+result so the outer catch can't re-record them.
+
+PR #8 has been through three rounds of automated review (all findings
+confirmed and fixed, no pushback needed) — see the PR thread for the full
+list. Nothing outstanding on the review side; the only gate left is a real
+Windows run.
 
 Still open: setup docs need `nvm-windows` notes — it ignores `.nvmrc`.
 

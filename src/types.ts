@@ -33,7 +33,14 @@ export interface LabelRequest {
 /** Result of processing a single LabelRequest. */
 export interface LabelResult {
   sku: string;
-  status: 'printed' | 'downloaded' | 'skipped' | 'failed';
+  /**
+   * 'downloaded' means the PDF was saved and printing was never attempted
+   * (dry run, or PRINTER_NAME unset). 'print-failed' means the PDF was
+   * saved but the printer handoff itself threw — pdfPath is still set, so
+   * the artifact isn't lost, but unlike 'downloaded' this counts as a
+   * command failure (see cli.ts's exit code check).
+   */
+  status: 'printed' | 'downloaded' | 'print-failed' | 'skipped' | 'failed';
   /** Absolute path to the downloaded PDF, when one was produced. */
   pdfPath?: string;
   message?: string;
