@@ -170,21 +170,36 @@ CLI equivalent of `lp -d <printer>`:
   printer name.
 - So each print job: reads the current Windows default printer, flips the
   default to `PRINTER_NAME` (via `Win32_Printer.SetDefaultPrinter` over
-  PowerShell/CIM), fires the Print verb once per copy, waits ~5s per copy
-  for the handler to pick the job up, then restores the original default.
+  PowerShell/CIM), fires the Print verb once per copy, **waits for the job
+  to actually appear in that printer's queue**, then restores the original
+  default.
+- The wait matters. `Start-Process -Verb Print` returns as soon as the
+  viewer *launches*, but the viewer reads the default printer when it
+  *submits* — potentially many seconds later on an Edge cold start.
+  Restoring the default on a fixed timer instead would send the labels to
+  whatever printer was default before, while still reporting success.
+- Setting the default is verified by reading it back. A `PRINTER_NAME` that
+  matches no installed printer fails loudly with the name it actually found,
+  rather than quietly printing to the existing default.
 - This needs a PDF viewer with a registered Print verb — Edge (installed on
   every Windows box) or Acrobat both work.
 - `--printers` on Windows lists `Win32_Printer` names instead of CUPS
   queues.
 
 This flips the machine's default printer for the duration of the print
-call. It's restored automatically afterward, but if the process is killed
-mid-print the default may be left pointing at `PRINTER_NAME` until the next
-run (or you fix it by hand in Settings). It hasn't yet been verified against
-a real Windows box + physical printer — the code paths were written and
-typechecked but not run live; treat the first real run as the actual test
-and watch it happen (`--dry-run` first, or watch the print job appear in
-the print queue).
+call, and restores it afterward. Two cases where it doesn't get restored:
+
+- The process is killed mid-print — the default may be left pointing at
+  `PRINTER_NAME` until the next run (or you fix it in Settings).
+- The machine had **no** default printer to begin with (common on freshly
+  imaged or kiosk-style PCs). Windows has no "unset the default" call, so
+  `PRINTER_NAME` is left as the default and the run logs a warning saying
+  so.
+
+It hasn't yet been verified against a real Windows box + physical printer —
+the code paths were written and typechecked but not run live; treat the
+first real run as the actual test and watch it happen (`--dry-run` first,
+or watch the print job appear in the print queue).
 
 ### Setting `PRINTER_NAME` on Windows
 

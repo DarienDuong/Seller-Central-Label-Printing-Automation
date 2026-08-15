@@ -31,7 +31,7 @@ Options
   --dry-run            Download the PDFs, never send to the printer
   --headed             Force a visible browser window
   --json               Print machine-readable results (for skill use)
-  --printers           List CUPS printers and exit
+  --printers           List available printers and exit
   --help
 `;
 
@@ -87,7 +87,7 @@ async function main(): Promise<number> {
 
   if (flags.has('printers')) {
     const printers = await listPrinters();
-    console.log(printers.length ? printers.join('\n') : 'No CUPS printers found.');
+    console.log(printers.length ? printers.join('\n') : 'No printers found.');
     return 0;
   }
 
