@@ -179,20 +179,37 @@ These cost real debugging time. Don't rediscover them.
 
 **4B — Windows support.** `src/printer.ts` now branches on `os.platform()`.
 Windows has no CLI equivalent of `lp -d <printer>`, so the approach is:
-temporarily flip the Windows default printer to `PRINTER_NAME` via
-`Win32_Printer.SetDefaultPrinter` (PowerShell + CIM), fire
-`Start-Process -Verb Print` once per copy (the registered PDF handler's
-print verb, which only ever targets the default printer), wait ~5s/copy for
-it to spool, then restore the previous default printer. `--printers` lists
-`Win32_Printer` names on Windows. Implemented and typechecked on
-`feat/windows-printing` (**open PR #8**, two commits on top of `main`
-`6e98828`) but **not yet run against a real Windows machine with a physical
+resolve `PRINTER_NAME` to Windows's own exact printer-name string, flip the
+default printer to it (`Win32_Printer.SetDefaultPrinter` via PowerShell +
+CIM, read back to confirm), fire `Start-Process -Verb Print` once per copy
+(the registered PDF handler's print verb, which only ever targets the
+default printer), **poll the target printer's job queue** (`Get-PrintJob`,
+by job id, run as a single PowerShell process per wait rather than one
+process per poll tick) until the job actually appears — up to 60s, falling
+back to a fixed 15s hold only if the queue can't be read — then restore the
+previous default printer. `--printers` lists `Win32_Printer` names on
+Windows. Implemented and typechecked on `feat/windows-printing` (**open PR
+#8**) but **not yet run against a real Windows machine with a physical
 printer** — the owner doesn't have warehouse PC access this session. Treat
-the first live run as the real test: use
-`--dry-run` first, confirm `PRINTER_NAME` matches `Get-CimInstance
-Win32_Printer`, and watch the job land in the Windows print queue. Known
-rough edge: if the process is killed mid-print, the Windows default printer
-can be left pointed at `PRINTER_NAME` instead of restored.
+the first live run as the real test: use `--dry-run` first, confirm
+`PRINTER_NAME` matches `Get-CimInstance Win32_Printer`, and watch the job
+land in the Windows print queue.
+
+The fixed-timer design (a flat sleep instead of polling the queue) was
+tried and reverted after review — it raced the async PDF handler and could
+restore the default before the job was actually submitted, printing
+silently to the wrong device. Don't reintroduce a fixed sleep as the
+primary wait; the `HANDOFF_FALLBACK_MS` fixed wait is deliberately a
+fallback only, used when `Get-PrintJob` itself is unavailable.
+
+Known rough edges, both already surfaced with a log line rather than
+silently occurring:
+- If the process is killed mid-print, the Windows default printer can be
+  left pointed at `PRINTER_NAME` instead of restored.
+- If the machine had **no** default printer before the run (common on
+  freshly imaged / kiosk-style PCs), there's no "unset the default" API to
+  restore to — `PRINTER_NAME` is left as the new default even after a clean
+  run, with a warning logged.
 
 Still open: setup docs need `nvm-windows` notes — it ignores `.nvmrc`.
 

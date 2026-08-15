@@ -69,13 +69,15 @@ export async function printLabels(
         await download.saveAs(pdfPath);
         log.done(`Saved ${pdfPath}`);
 
-        for (const req of found) {
-          if (options.dryRun) {
-            results.push({ sku: req.sku, status: 'downloaded', pdfPath, message: 'dry run' });
-          } else {
-            const printed = await sendToPrinter(pdfPath);
-            results.push({ sku: req.sku, status: printed ? 'printed' : 'downloaded', pdfPath });
-          }
+        // One PDF covers the whole group — print it once, not once per SKU
+        // in the loop below. sendToPrinter used to be called per-SKU with
+        // the same pdfPath, so an N-SKU group silently printed N copies of
+        // the combined PDF (a 12-SKU shipment sent an 82-page PDF 12 times).
+        if (options.dryRun) {
+          for (const req of found) results.push({ sku: req.sku, status: 'downloaded', pdfPath, message: 'dry run' });
+        } else {
+          const printed = await sendToPrinter(pdfPath);
+          for (const req of found) results.push({ sku: req.sku, status: printed ? 'printed' : 'downloaded', pdfPath });
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);

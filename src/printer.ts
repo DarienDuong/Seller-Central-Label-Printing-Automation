@@ -76,7 +76,7 @@ function errText(err: unknown): string {
  * Run a PowerShell script. Values are passed as *environment variables*
  * (read inside the script as `$env:NAME`), never spliced into the script
  * text — printer names and paths routinely contain quotes, `$`, and spaces,
- * and splicing them produced silently-wrong WQL filters.
+ * and splicing them produced silently-wrong filters.
  */
 async function runPowerShell(script: string, vars: Record<string, string> = {}): Promise<string> {
   const { stdout } = await run(
@@ -92,93 +92,146 @@ async function getDefaultPrinterWindows(): Promise<string> {
 }
 
 /**
- * Set the machine's default printer, then read it back to confirm. The
- * read-back is the point: `Invoke-CimMethod` on a null input doesn't
- * reliably surface as a non-zero exit code, so without it a typo'd
- * PRINTER_NAME silently leaves the previous default in place.
+ * Resolve PRINTER_NAME to the exact string Windows uses for it. Matching via
+ * `Where-Object -eq` (case-insensitive, same as Windows itself) instead of a
+ * WQL `-Filter` string sidesteps WQL's own quoting rules entirely — WQL
+ * treats `\` as an escape character inside a string literal, so a network
+ * printer name like `\\PRINTSERVER\Zebra ZD420` silently matched nothing
+ * under a filter-string approach. Every later step uses this resolved name,
+ * so a case difference between `.env` and Windows can't cause a false
+ * "did the set actually take?" mismatch downstream.
  */
-async function setDefaultPrinterWindows(name: string): Promise<void> {
-  await runPowerShell(
-    'Invoke-CimMethod -InputObject (Get-CimInstance -ClassName Win32_Printer -Filter "Name=`"$($env:SC_PRINTER)`"") -MethodName SetDefaultPrinter | Out-Null',
+async function resolvePrinterWindows(name: string): Promise<string> {
+  const actual = await runPowerShell(
+    '(Get-CimInstance -ClassName Win32_Printer | Where-Object { $_.Name -eq $env:SC_PRINTER } | Select-Object -First 1).Name',
     { SC_PRINTER: name },
-  ).catch((err: unknown) => {
-    throw new Error(`Could not set "${name}" as the Windows default printer: ${errText(err)}`);
-  });
-
-  const actual = await getDefaultPrinterWindows();
-  if (actual !== name) {
+  );
+  if (!actual) {
     throw new Error(
-      `Tried to set the Windows default printer to "${name}" but it is "${actual || '(none)'}". ` +
-        `Check PRINTER_NAME in .env matches a name from \`npm run print -- --printers\` exactly.`,
+      `No Windows printer matches PRINTER_NAME "${name}". Run \`npm run print -- --printers\` and copy the name exactly.`,
+    );
+  }
+  return actual;
+}
+
+async function applyDefaultPrinterWindows(name: string): Promise<void> {
+  await runPowerShell(
+    'Invoke-CimMethod -InputObject (Get-CimInstance -ClassName Win32_Printer | Where-Object { $_.Name -eq $env:SC_PRINTER } | Select-Object -First 1) -MethodName SetDefaultPrinter | Out-Null',
+    { SC_PRINTER: name },
+  );
+}
+
+async function confirmDefaultPrinterWindows(expected: string): Promise<void> {
+  const actual = await getDefaultPrinterWindows();
+  if (actual !== expected) {
+    throw new Error(
+      `Set the Windows default printer but it now reads back as "${actual || '(none)'}", not "${expected}" — ` +
+        `it may have changed again between the set and the check. Try the run again.`,
     );
   }
 }
 
-/**
- * Count jobs currently queued on a printer, or null if the queue can't be
- * read at all (`Get-PrintJob` lives in the PrintManagement module and isn't
- * guaranteed present). null means "unknown", which callers treat very
- * differently from a genuine zero.
- */
-async function printJobCount(printerName: string): Promise<number | null> {
-  const out = await runPowerShell('@(Get-PrintJob -PrinterName $env:SC_PRINTER).Count', {
-    SC_PRINTER: printerName,
-  }).catch(() => null);
-  if (out === null) return null;
-  const n = Number.parseInt(out, 10);
-  return Number.isFinite(n) ? n : null;
+/** Set the machine's default printer, then read it back to confirm the set actually took. */
+async function setDefaultPrinterWindows(name: string): Promise<void> {
+  await applyDefaultPrinterWindows(name);
+  await confirmDefaultPrinterWindows(name);
+}
+
+/** Ids of jobs currently queued on a printer. Throws (with the real cause) if the queue can't be read. */
+async function queryPrintJobIds(printerName: string): Promise<Set<string>> {
+  const out = await runPowerShell(
+    '(Get-PrintJob -PrinterName $env:SC_PRINTER | Select-Object -ExpandProperty Id) -join ","',
+    { SC_PRINTER: printerName },
+  );
+  return new Set(
+    out
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
 }
 
 /**
- * Wait for the PDF handler to actually submit the job. `Start-Process -Verb
- * Print` returns as soon as the viewer *launches* — the viewer reads the
- * default printer when it submits, which can be many seconds later on an
- * Edge cold start. Restoring the default before then would send the labels
- * to the wrong printer while still reporting success, so hold the default
- * until the job shows up in the target printer's queue.
+ * Wait for a job whose id isn't in `baselineIds` to appear in the target
+ * printer's queue. The whole wait loop runs as a *single* PowerShell process
+ * (`Start-Sleep` inside the script) rather than one process per poll tick —
+ * spawning `powershell.exe` per tick made the real poll period several times
+ * `JOB_POLL_INTERVAL_MS` once PowerShell startup and the PrintManagement
+ * module's autoload are counted on every spawn, which widens exactly the
+ * blind window this function exists to shrink: a one-page label job can
+ * spool and clear the queue between ticks.
  *
- * Returns false only when the queue was readable and nothing ever appeared.
- * A short label job can spool and clear between polls, so a miss is treated
- * as inconclusive by the caller, not as proof of failure.
+ * Returns false only when nothing new ever appeared. A transient failure to
+ * read the queue mid-poll is swallowed inside the script and treated as an
+ * inconclusive tick, not a hard stop — `queryPrintJobIds` already proved the
+ * queue was readable before this function was called.
  */
-async function waitForPrintJob(printerName: string, baseline: number): Promise<boolean> {
-  const deadline = Date.now() + JOB_POLL_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    const count = await printJobCount(printerName);
-    if (count !== null && count > baseline) return true;
-    await new Promise((resolve) => setTimeout(resolve, JOB_POLL_INTERVAL_MS));
-  }
-  return false;
+async function waitForPrintJob(printerName: string, baselineIds: Set<string>): Promise<boolean> {
+  const script = `
+    $deadline = (Get-Date).AddMilliseconds([double]$env:SC_TIMEOUT_MS)
+    $baseline = @($env:SC_BASELINE -split ',' | Where-Object { $_ -ne '' })
+    while ((Get-Date) -lt $deadline) {
+      try {
+        $ids = @(Get-PrintJob -PrinterName $env:SC_PRINTER -ErrorAction Stop | Select-Object -ExpandProperty Id)
+        if (@($ids | Where-Object { $baseline -notcontains $_ }).Count -gt 0) { Write-Output 'FOUND'; exit 0 }
+      } catch {}
+      Start-Sleep -Milliseconds ([int]$env:SC_INTERVAL_MS)
+    }
+    Write-Output 'TIMEOUT'
+  `;
+  const result = await runPowerShell(script, {
+    SC_PRINTER: printerName,
+    SC_TIMEOUT_MS: String(JOB_POLL_TIMEOUT_MS),
+    SC_INTERVAL_MS: String(JOB_POLL_INTERVAL_MS),
+    SC_BASELINE: [...baselineIds].join(','),
+  });
+  return result === 'FOUND';
 }
 
 async function sendToPrinterWindows(pdfPath: string, copies: number): Promise<boolean> {
-  const target = config.printerName;
+  const target = await resolvePrinterWindows(config.printerName);
   const previousDefault = await getDefaultPrinterWindows();
-
-  log.step(`Setting Windows default printer to ${target}`);
-  await setDefaultPrinterWindows(target);
+  let changedDefault = false;
 
   try {
+    log.step(`Setting Windows default printer to ${target}`);
+    await applyDefaultPrinterWindows(target);
+    // Track that the mutation ran (not just that it was confirmed) so a
+    // failure in confirmDefaultPrinterWindows below still triggers a
+    // restore attempt in the finally block, instead of leaving the machine
+    // flipped with nothing to undo it.
+    changedDefault = true;
+    await confirmDefaultPrinterWindows(target);
+
     for (let i = 0; i < copies; i++) {
       log.step(`Sending print job ${i + 1}/${copies} for ${pdfPath}`);
-      const baseline = await printJobCount(target);
+
+      // Job identity, not a raw count: with copies > 1, a same-size baseline
+      // count can't tell copy 2's job apart from copy 1's, which may have
+      // already spooled and cleared the queue by the time copy 2 is checked.
+      let baselineIds: Set<string> | null = null;
+      try {
+        baselineIds = await queryPrintJobIds(target);
+      } catch (err) {
+        log.warn(
+          `Can't read "${target}"'s print queue (${errText(err)}), so the job can't be confirmed — ` +
+            `waiting ${HANDOFF_FALLBACK_MS / 1000}s for the PDF viewer to submit it.`,
+        );
+      }
+
       await runPowerShell('Start-Process -FilePath $env:SC_PDF_PATH -Verb Print', { SC_PDF_PATH: pdfPath });
 
-      if (baseline === null) {
+      if (baselineIds === null) {
         // Can't read the queue, so there's nothing to poll. Hold the default
         // printer for a fixed interval instead — still the whole point, since
         // restoring it early is what sends labels to the wrong printer.
-        log.warn(
-          `Can't read "${target}"'s print queue (Get-PrintJob unavailable), so the job can't be ` +
-            `confirmed — waiting ${HANDOFF_FALLBACK_MS / 1000}s for the PDF viewer to submit it.`,
-        );
         await new Promise((resolve) => setTimeout(resolve, HANDOFF_FALLBACK_MS));
-      } else if (!(await waitForPrintJob(target, baseline))) {
+      } else if (!(await waitForPrintJob(target, baselineIds))) {
         // Inconclusive, not proof of failure: a one-page label can spool and
-        // clear the queue between polls. Warn rather than fail the SKU, since
-        // a false failure invites a duplicate reprint of the whole batch.
+        // clear the queue before the next poll. Warn rather than fail the
+        // SKU — a false failure invites a duplicate reprint of the batch.
         log.warn(
-          `Never saw the job appear in "${target}"'s queue within ${JOB_POLL_TIMEOUT_MS / 1000}s. ` +
+          `Never saw a new job appear in "${target}"'s queue within ${JOB_POLL_TIMEOUT_MS / 1000}s. ` +
             `It may have printed and cleared too quickly to observe. If nothing came out, the PDF is ` +
             `still at ${pdfPath} — check that a PDF viewer with a Print action is installed (Edge or Acrobat).`,
         );
@@ -187,7 +240,7 @@ async function sendToPrinterWindows(pdfPath: string, copies: number): Promise<bo
     log.done(`Sent ${copies} job(s) to ${target}`);
     return true;
   } finally {
-    await restoreDefaultPrinterWindows(previousDefault, target);
+    if (changedDefault) await restoreDefaultPrinterWindows(previousDefault, target);
   }
 }
 
