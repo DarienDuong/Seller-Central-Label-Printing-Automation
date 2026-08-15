@@ -178,9 +178,12 @@ CLI equivalent of `lp -d <printer>`:
   *submits* — potentially many seconds later on an Edge cold start.
   Restoring the default on a fixed timer instead would send the labels to
   whatever printer was default before, while still reporting success.
-- Setting the default is verified by reading it back. A `PRINTER_NAME` that
-  matches no installed printer fails loudly with the name it actually found,
-  rather than quietly printing to the existing default.
+- `PRINTER_NAME` is resolved against the installed printers *before* the
+  default is touched at all — a name that matches nothing fails loudly
+  without changing anything on the machine, rather than quietly printing to
+  the existing default. Setting the default is separately verified by
+  reading it back afterward, which catches the (rarer) case of the default
+  changing out from under the run between the set and the check.
 - This needs a PDF viewer with a registered Print verb — Edge (installed on
   every Windows box) or Acrobat both work.
 - `--printers` on Windows lists `Win32_Printer` names instead of CUPS
@@ -211,17 +214,21 @@ from PowerShell:
 Get-CimInstance -ClassName Win32_Printer | Select-Object Name
 ```
 
-or equivalently, once the repo is set up:
+```
+Name
+----
+Zebra ZD420 (Warehouse)
+Microsoft Print to PDF
+HP LaserJet M110
+```
+
+or, once the repo is set up, the same list of names with no table header:
 
 ```bash
 npm run print -- --printers
 ```
 
-Example output:
-
 ```
-Name
-----
 Zebra ZD420 (Warehouse)
 Microsoft Print to PDF
 HP LaserJet M110
@@ -242,9 +249,11 @@ npm run print -- --sku ABC-123 --qty 1 --dry-run
 npm run print -- --sku ABC-123 --qty 1
 ```
 
-If `PRINTER_NAME` doesn't exactly match a `Win32_Printer` name, `SetDefaultPrinter`
-fails and the run errors out before anything prints — it will not silently
-fall back to whatever printer happened to be default.
+If `PRINTER_NAME` doesn't match any `Win32_Printer` name, the run errors out
+before touching the machine's default printer at all — it will not silently
+fall back to whatever printer happened to be default. (The match is
+case-insensitive, so a case difference between `.env` and Windows is fine;
+it just has to be the same name.)
 
 ## Where the PDFs go
 
