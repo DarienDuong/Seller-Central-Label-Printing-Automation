@@ -181,9 +181,15 @@ async function queryPrintJobIds(printerName: string): Promise<Set<string>> {
  * still cold-starting, a coworker's job arrives first), satisfy an
  * any-new-id test, and release the default printer before our job actually
  * submits. The match is a case-insensitive *suffix* check, not exact
- * equality — some handlers set `DocumentName` to the full path, or decorate
- * it (Edge-style `name.pdf - Profile 1 - Microsoft Edge`), and an exact `-eq`
- * would never fire against either.
+ * equality — some handlers set `DocumentName` to the full path (e.g.
+ * `C:\...\out\labels_ABC.pdf`), and `EndsWith` still matches that. It does
+ * NOT cover every naming scheme, though: a handler that appends to the name
+ * (Edge-style `labels_ABC.pdf - Profile 1 - Microsoft Edge`) has the file
+ * name as a *prefix*, not a suffix, so this still misses it — that's a known
+ * gap, not a bug. The failure mode of a miss is a false 'unmatched' (see
+ * below), never a false 'matched', so a machine whose handler decorates
+ * names this way shows up as 'unmatched' on every copy in the
+ * `Queue check for copy N/M: <result>` log rather than silently mismatching.
  *
  * Three outcomes, not two, because "some new job appeared but none matched
  * our name" is meaningfully different from "nothing new appeared at all" —
