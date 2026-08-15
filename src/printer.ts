@@ -180,16 +180,22 @@ async function queryPrintJobIds(printerName: string): Promise<Set<string>> {
  * another machine can land in the queue during the same window (Edge is
  * still cold-starting, a coworker's job arrives first), satisfy an
  * any-new-id test, and release the default printer before our job actually
- * submits. The match is a case-insensitive *suffix* check, not exact
- * equality — some handlers set `DocumentName` to the full path (e.g.
- * `C:\...\out\labels_ABC.pdf`), and `EndsWith` still matches that. It does
- * NOT cover every naming scheme, though: a handler that appends to the name
- * (Edge-style `labels_ABC.pdf - Profile 1 - Microsoft Edge`) has the file
- * name as a *prefix*, not a suffix, so this still misses it — that's a known
- * gap, not a bug. The failure mode of a miss is a false 'unmatched' (see
- * below), never a false 'matched', so a machine whose handler decorates
- * names this way shows up as 'unmatched' on every copy in the
- * `Queue check for copy N/M: <result>` log rather than silently mismatching.
+ * submits. The match is a case-insensitive *substring* check (`IndexOf`,
+ * not `EndsWith`) — a suffix check only covers a handler that sets
+ * `DocumentName` to the full path (`C:\...\out\labels_ABC.pdf`); it misses
+ * Edge's own decoration (`labels_ABC.pdf - Profile 1 - Microsoft Edge`),
+ * where the file name is a *prefix* of `DocumentName`, not a suffix — and
+ * Edge is the PDF handler this is actually gated on, since it's on every
+ * Windows box. `$docName` is `fileNameFor()`'s output (`labels_<skus>_<iso
+ * timestamp to the second>.pdf`), specific enough that a substring
+ * collision with an unrelated job is not a realistic risk. `IndexOf` rather
+ * than `.Contains(string, StringComparison)`: `runPowerShell` shells out to
+ * Windows PowerShell 5.1 (.NET Framework), where that `Contains` overload
+ * doesn't exist — it would throw inside `Where-Object`, get swallowed by
+ * the empty `catch` below, and turn every tick into an inconclusive one.
+ * `String.IndexOf(string, StringComparison)` does exist on .NET Framework.
+ * Not a wildcard match either (`-like`), since `[` in a file name is a
+ * pattern metacharacter there.
  *
  * Three outcomes, not two, because "some new job appeared but none matched
  * our name" is meaningfully different from "nothing new appeared at all" —
@@ -216,7 +222,7 @@ async function waitForPrintJob(printerName: string, baselineIds: Set<string>, pd
     while ((Get-Date) -lt $deadline) {
       try {
         $newJobs = @(Get-PrintJob -PrinterName $env:SC_PRINTER -ErrorAction Stop | Where-Object { $baseline -notcontains $_.Id })
-        $matched = @($newJobs | Where-Object { $_.DocumentName -and $_.DocumentName.EndsWith($docName, [System.StringComparison]::OrdinalIgnoreCase) })
+        $matched = @($newJobs | Where-Object { $_.DocumentName -and $_.DocumentName.IndexOf($docName, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 })
         if ($matched.Count -gt 0) { Write-Output 'MATCHED'; exit 0 }
         if ($newJobs.Count -gt 0) { $sawForeign = $true }
       } catch {}

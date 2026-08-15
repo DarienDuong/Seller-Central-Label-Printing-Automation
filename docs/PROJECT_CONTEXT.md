@@ -194,25 +194,36 @@ default printer), **poll the target printer's job queue** (`Get-PrintJob`,
 run as a single PowerShell process per wait rather than one process per poll
 tick) until *our* job appears, then restore the previous default printer.
 "Ours" is matched by `DocumentName` against the PDF's file name (a
-case-insensitive suffix check, not exact equality — some PDF handlers set
-the full path or decorate the name), not just any new job id — an
-any-new-id test let a concurrent job from another machine on a shared
-printer satisfy the wait and release the default early. A name match
-returns immediately; if the deadline passes with new jobs seen but none
-matching by name, or nothing new at all, the send is still reported as
-successful but flagged `unconfirmed` with a reason (not a hard failure — a
-one-page label can spool and clear the queue between polls, and a false
-failure invites a duplicate reprint of the batch). Falls back to a fixed
-15s hold only if the queue can't be read at all. `--printers` lists
-`Win32_Printer` names on Windows. Implemented and typechecked, merged in
-PR #8 with follow-ups in PR #13, but **not yet run against a real Windows
-machine with a physical printer** — the owner doesn't have warehouse PC
-access this session. Treat the first live run as the real test: use
-`--dry-run` first, confirm `PRINTER_NAME` matches `Get-CimInstance
-Win32_Printer`, watch the job land in the Windows print queue, and check
-the logged `Queue check for copy N/M: matched|unmatched|none` line — a
-run that's consistently `unmatched` (not `matched`) means the DocumentName
-suffix check isn't firing on that PDF handler and is worth a follow-up fix.
+case-insensitive *substring* check — `IndexOf`, not `EndsWith` — since a
+suffix check only covers a handler that sets `DocumentName` to the full
+path, and misses Edge's own decoration, `name.pdf - Profile 1 - Microsoft
+Edge`, where the file name is a prefix, not a suffix; Edge is the handler
+this is actually gated on), not just any new job id — an any-new-id test
+let a concurrent job from another machine on a shared printer satisfy the
+wait and release the default early. A name match returns immediately —
+that's the fast path, and the one that matters for run time: a `matched`
+copy returns as soon as the job shows up, but a copy that ends `unmatched`
+or `none` blocks for the **full poll timeout (60s)** before the default
+printer is restored, since there's no other way to be sure nothing more
+will show up. On a multi-copy or multi-group run, `unmatched`/`none`
+becoming the steady state (not the exception) is what turns a few-second
+operation into minutes — that's the concrete cost of a mismatch, not just
+a warning. When the deadline passes with new jobs seen but none matching by
+name, or nothing new at all, the send is still reported as successful but
+flagged `unconfirmed` with a reason (not a hard failure — a one-page label
+can spool and clear the queue between polls, and a false failure invites a
+duplicate reprint of the batch). Falls back to a fixed 15s hold only if the
+queue can't be read at all. `--printers` lists `Win32_Printer` names on
+Windows. Implemented and typechecked, merged in PR #8 with follow-ups in PR
+#13, but **not yet run against a real Windows machine with a physical
+printer** — the owner doesn't have warehouse PC access this session. Treat
+the first live run as the real test: use `--dry-run` first, confirm
+`PRINTER_NAME` matches `Get-CimInstance Win32_Printer`, watch the job land
+in the Windows print queue, and check the logged `Queue check for copy
+N/M: matched|unmatched|none` line — a run that's consistently `unmatched`
+(not `matched`) means the DocumentName substring check isn't firing on
+that PDF handler (and the run is paying the full 60s/copy for it) and is
+worth a follow-up fix.
 
 The fixed-timer design (a flat sleep instead of polling the queue) was
 tried and reverted after review — it raced the async PDF handler and could
