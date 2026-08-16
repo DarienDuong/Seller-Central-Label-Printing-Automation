@@ -3,6 +3,13 @@ name: Claude PR Review
 # Runs an automated code review as soon as a PR is opened or updated.
 # Draft PRs are skipped until they're marked ready for review.
 #
+# Pinned to Sonnet (--model in claude_args below) rather than left on the
+# default. The default model was over-engineering these reviews — treating
+# minor stylistic preferences as findings and not converging across
+# re-review cycles. Sonnet plus the explicit stop conditions in step 8 of the
+# prompt below are meant to fix that; revisit if reviews start missing real
+# bugs as a result.
+#
 # Requires:
 #   - The Claude GitHub App installed on this repo (https://github.com/apps/claude)
 #   - Secret ANTHROPIC_API_KEY set on the repo. To use a subscription token
@@ -69,6 +76,7 @@ jobs:
           # title, body, diff) on a public repo — see the injection note in the
           # prompt. Read/Grep/Glob to read the code, Write to build the payload.
           claude_args: >-
+            --model claude-sonnet-5
             --max-turns 60
             --allowedTools "Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh api:*),Read,Grep,Glob,Write"
           prompt: |
@@ -140,11 +148,14 @@ jobs:
                Write each comment's body to explain your reasoning, not just your conclusion — name the
                file/line, the concrete failure scenario, and why you think it's a problem, so a human
                (or you, reading a reply later) can follow the logic and push back on it specifically.
-            8. If a change is well-reasoned and you don't disagree with it, don't invent a nitpick to
-               justify commenting — silence there is fine. If you find nothing new worth flagging, post
-               one top-level PR comment (via `gh pr comment`) saying so plainly and why. If a previous
-               run already said that and nothing has changed, say nothing at all.
+            8. Findings are for critical bugs, security risks, and broken logic only — not style,
+               formatting, or naming preferences. If a change is well-reasoned and you don't disagree
+               with it on those terms, don't invent a nitpick to justify commenting — silence there is
+               fine. If you find nothing new worth flagging, post one top-level PR comment (via
+               `gh pr comment`) saying so plainly and why. If a previous run already said that and
+               nothing has changed, say nothing at all.
 
             Be direct and substantive. Disagreeing with the author's choices is the point of this review,
             but every disagreement must be grounded in a concrete scenario in the actual code, never a
-            style preference.
+            style preference. Once you've said everything worth saying about a PR, stop — do not keep
+            hunting for something new to add on every re-run just because the action ran again.
