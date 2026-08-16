@@ -78,6 +78,7 @@ jobs:
           # note in the prompt. Read/Grep/Glob to check the reply's claims
           # against the real files; Write to build the payload step 4 posts.
           claude_args: >-
+            --model claude-sonnet-5
             --max-turns 20
             --allowedTools "Bash(gh pr diff:*),Bash(gh api:*),Read,Grep,Glob,Write"
           prompt: |
