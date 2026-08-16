@@ -13,10 +13,12 @@ export interface SendResult {
   sent: boolean;
   /**
    * Set when `sent` is true but the handoff couldn't be confirmed — the job
-   * was never actually observed reaching the printer's queue. Undefined on
-   * a confirmed send (always on CUPS; on Windows, whenever the job was
-   * seen). Callers should treat this as "printed, but verify" rather than
-   * a plain success.
+   * was never actually observed reaching the printer's queue with a
+   * `DocumentName` tying it to this PDF. Undefined on a confirmed send:
+   * always on CUPS, and on Windows only when a job was seen *and matched*
+   * (not merely "a job was seen" — a foreign job on a shared printer can
+   * satisfy the former without the latter). Callers should treat this as
+   * "printed, but verify" rather than a plain success.
    */
   unconfirmed?: string;
 }
@@ -186,9 +188,15 @@ async function queryPrintJobIds(printerName: string): Promise<Set<string>> {
  * Edge's own decoration (`labels_ABC.pdf - Profile 1 - Microsoft Edge`),
  * where the file name is a *prefix* of `DocumentName`, not a suffix — and
  * Edge is the PDF handler this is actually gated on, since it's on every
- * Windows box. `$docName` is `fileNameFor()`'s output (`labels_<skus>_<iso
- * timestamp to the second>.pdf`), specific enough that a substring
- * collision with an unrelated job is not a realistic risk. `IndexOf` rather
+ * Windows box. `$docName` is `fileNameFor()`'s output with the `.pdf`
+ * extension stripped — deliberately: a browser's print-job `DocumentName` is
+ * commonly derived from the document title, which for a locally-opened PDF
+ * is often the file name *without* its extension, and every path through
+ * `fileNameFor()` already produces `.pdf`, so dropping it costs nothing on
+ * the collision front while removing one more way a handler-specific naming
+ * quirk could miss. Still specific enough (SKUs + an ISO timestamp to the
+ * second) that a substring collision with an unrelated job is not a
+ * realistic risk. `IndexOf` rather
  * than `.Contains(string, StringComparison)`: `runPowerShell` shells out to
  * Windows PowerShell 5.1 (.NET Framework), where that `Contains` overload
  * doesn't exist — it would throw inside `Where-Object`, get swallowed by
@@ -235,7 +243,7 @@ async function waitForPrintJob(printerName: string, baselineIds: Set<string>, pd
     SC_TIMEOUT_MS: String(JOB_POLL_TIMEOUT_MS),
     SC_INTERVAL_MS: String(JOB_POLL_INTERVAL_MS),
     SC_BASELINE: [...baselineIds].join(','),
-    SC_DOC_NAME: basename(pdfPath),
+    SC_DOC_NAME: basename(pdfPath, '.pdf'),
   });
   if (result === 'MATCHED') return 'matched';
   if (result === 'UNMATCHED') return 'unmatched';

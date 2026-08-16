@@ -96,7 +96,7 @@ export async function printLabels(
             for (const req of found) {
               record(
                 result.sent
-                  ? { sku: req.sku, status: 'printed', pdfPath, ...(result.unconfirmed ? { message: result.unconfirmed } : {}) }
+                  ? { sku: req.sku, status: 'printed', pdfPath, ...(result.unconfirmed ? { unconfirmed: result.unconfirmed } : {}) }
                   : { sku: req.sku, status: 'downloaded', pdfPath },
               );
             }

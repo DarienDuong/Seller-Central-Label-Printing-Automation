@@ -127,7 +127,10 @@ async function main(): Promise<number> {
       if (flags.has('json')) {
         console.log(JSON.stringify(results, null, 2));
       } else {
-        for (const r of results) log.info(`${r.sku}: ${r.status}${r.message ? ` — ${r.message}` : ''}`);
+        for (const r of results) {
+          const note = r.message ?? r.unconfirmed;
+          log.info(`${r.sku}: ${r.status}${r.unconfirmed ? ' (unconfirmed)' : ''}${note ? ` — ${note}` : ''}`);
+        }
       }
       return results.some((r) => r.status === 'failed' || r.status === 'print-failed') ? 1 : 0;
     }
