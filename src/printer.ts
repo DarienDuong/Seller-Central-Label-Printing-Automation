@@ -221,7 +221,21 @@ async function queryPrintJobIds(printerName: string): Promise<Set<string>> {
  */
 type JobWaitResult = 'matched' | 'unmatched' | 'none';
 
-async function waitForPrintJob(printerName: string, baselineIds: Set<string>, pdfPath: string): Promise<JobWaitResult> {
+/**
+ * The string matched against a print job's `DocumentName` — the PDF's file
+ * name with its extension stripped (see the doc comment on `waitForPrintJob`
+ * for why). Shared by the matcher and by the warning message that reports a
+ * miss, so the two can't drift the way they did before: the warning used to
+ * report `basename(pdfPath)` (extension included) while the match itself
+ * used the stripped form, so an operator comparing the logged string against
+ * a queue's real `DocumentName` was comparing against a string the matcher
+ * never actually searched for.
+ */
+function docNameFor(pdfPath: string): string {
+  return basename(pdfPath, '.pdf');
+}
+
+async function waitForPrintJob(printerName: string, baselineIds: Set<string>, docName: string): Promise<JobWaitResult> {
   const script = `
     $deadline = (Get-Date).AddMilliseconds([double]$env:SC_TIMEOUT_MS)
     $baseline = @($env:SC_BASELINE -split ',' | Where-Object { $_ -ne '' })
@@ -243,7 +257,7 @@ async function waitForPrintJob(printerName: string, baselineIds: Set<string>, pd
     SC_TIMEOUT_MS: String(JOB_POLL_TIMEOUT_MS),
     SC_INTERVAL_MS: String(JOB_POLL_INTERVAL_MS),
     SC_BASELINE: [...baselineIds].join(','),
-    SC_DOC_NAME: basename(pdfPath, '.pdf'),
+    SC_DOC_NAME: docName,
   });
   if (result === 'MATCHED') return 'matched';
   if (result === 'UNMATCHED') return 'unmatched';
@@ -295,7 +309,8 @@ async function sendToPrinterWindows(pdfPath: string, copies: number): Promise<Se
         // restoring it early is what sends labels to the wrong printer.
         await new Promise((resolve) => setTimeout(resolve, HANDOFF_FALLBACK_MS));
       } else {
-        const waitResult = await waitForPrintJob(target, baselineIds, pdfPath);
+        const docName = docNameFor(pdfPath);
+        const waitResult = await waitForPrintJob(target, baselineIds, docName);
         // Logged for every branch, including the confirmed one — the first
         // live Windows run is the actual test of whether DocumentName
         // matching works at all on that machine's PDF handler, and without
@@ -310,9 +325,9 @@ async function sendToPrinterWindows(pdfPath: string, copies: number): Promise<Se
           // or a PDF handler whose DocumentName doesn't resemble the file
           // name at all, in which case this fires on every run.
           const reason =
-            `Saw new job(s) appear in "${target}"'s queue, but none matched the file name ` +
-            `"${basename(pdfPath)}" — can't tell ours apart from another job on this printer. ` +
-            `If nothing came out, the PDF is still at ${pdfPath}.`;
+            `Saw new job(s) appear in "${target}"'s queue, but none had a DocumentName containing ` +
+            `"${docName}" — can't tell ours apart from another job on this printer. If nothing came ` +
+            `out, the PDF is still at ${pdfPath}.`;
           log.warn(reason);
           unconfirmedReasons.push(reason);
         } else if (waitResult === 'none') {
