@@ -6,9 +6,21 @@ name: Claude PR Review
 # Pinned to Sonnet (--model in claude_args below) rather than left on the
 # default. The default model was over-engineering these reviews — treating
 # minor stylistic preferences as findings and not converging across
-# re-review cycles. Sonnet plus the explicit stop conditions in step 8 of the
-# prompt below are meant to fix that; revisit if reviews start missing real
-# bugs as a result.
+# re-review cycles. Sonnet plus the explicit stop conditions in the prompt
+# below are meant to fix that; revisit if reviews start missing real bugs
+# as a result.
+#
+# Ends every run with a real GitHub review verdict (APPROVE or
+# REQUEST_CHANGES via the reviews API `event` field), not just a comment —
+# the standard mechanism a PR bot is expected to use, and the one thing that
+# shows up as an unambiguous, machine-checkable status on the PR (and can
+# gate a branch-protection rule, if this repo adds one later) instead of
+# text a human has to go read and interpret. The verdict body always
+# contains one of two exact sentences ("This PR is ready to merge." /
+# "This PR is NOT ready to merge.") so it's grep-able by claude-pr-mention.yml
+# and by a human skimming the PR. Only correctness/security findings can
+# produce REQUEST_CHANGES — style/simplification/efficiency findings are
+# advisory and can accompany an APPROVE, but never block one. See step 9.
 #
 # Requires:
 #   - The Claude GitHub App installed on this repo (https://github.com/apps/claude)
@@ -53,10 +65,12 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-      # gh pr comment (step 7's fallback / "nothing found" comment) posts
-      # through the Issues API, not Pulls — PRs and issues share that
+      # gh pr comment (step 9's fallback, if posting the review itself fails)
+      # posts through the Issues API, not Pulls — PRs and issues share that
       # comment endpoint under the hood, and it checks `issues`, not
       # `pull-requests`, permission. pull-requests: write alone 403s it.
+      # Submitting the review itself (event: APPROVE/REQUEST_CHANGES) is a
+      # Pulls API call and only needs pull-requests: write.
       issues: write
       id-token: write
     env:
@@ -130,32 +144,60 @@ jobs:
                including ones that were argued down in a reply thread. Re-posting a finding the author
                already answered is worse than staying silent.
             6. Get the PR's head commit SHA: `gh pr view ${{ github.event.pull_request.number }} --json headRefOid -q .headRefOid`
-            7. Post the surviving findings as inline review comments:
+            7. Sort every surviving finding into exactly one of two buckets. This split is what step 9's
+               verdict is built from, so get it right:
+               - **Blocking**: a genuine correctness bug, a security/injection risk, or logic that's
+                 provably broken for some real input/state. Angles a-d from step 3 land here.
+               - **Advisory**: everything else that's still worth saying — real duplication, unnecessary
+                 complexity, a genuine CLAUDE.md violation (angles e-f) — but not proof the PR misbehaves.
+               If you can't point at a concrete input/state/output that's wrong, it's advisory, not
+               blocking, no matter how strongly you feel about it. When in doubt, downgrade — false
+               blocks cost more than a missed advisory note.
+            8. Post one review covering both inline comments and the overall verdict in a single call:
                `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews -X POST --input <payload.json>`
-               where payload.json has `commit_id`, `event: "COMMENT"`, and a `comments` array of
-               `{path, line, body}`.
+               where payload.json has `commit_id`, an `event`, `body`, and a `comments` array of
+               `{path, line, body}` for every surviving finding (blocking and advisory both — advisory
+               findings are still worth surfacing inline, they just don't change `event`).
 
                Every `line` MUST be a line that appears in the diff for that `path`. This endpoint is
                all-or-nothing: one comment anchored outside the diff makes the whole call fail with a
-               422 and you lose every finding in it. Step 2 has you reading beyond the diff hunks, so
-               when a finding is really about an unchanged line, anchor the comment to the nearest
-               changed line in that file and say in the body which line you actually mean.
+               422 and you lose every finding in it, verdict included. Step 2 has you reading beyond the
+               diff hunks, so when a finding is really about an unchanged line, anchor the comment to
+               the nearest changed line in that file and say in the body which line you actually mean.
 
-               If the call still 422s, do not give up on the findings: retry posting them one review at
-               a time to isolate the bad anchor, and put anything you cannot anchor into a top-level
-               `gh pr comment` instead.
+               If the call still 422s, do not give up: retry posting one review at a time to isolate the
+               bad anchor, and put anything you cannot anchor into the top-level review `body` instead of
+               dropping it — the verdict in step 9 still has to go out even if a comment can't be anchored.
 
                Write each comment's body to explain your reasoning, not just your conclusion — name the
                file/line, the concrete failure scenario, and why you think it's a problem, so a human
                (or you, reading a reply later) can follow the logic and push back on it specifically.
-            8. Findings are for critical bugs, security risks, and broken logic only — not style,
-               formatting, or naming preferences. If a change is well-reasoned and you don't disagree
-               with it on those terms, don't invent a nitpick to justify commenting — silence there is
-               fine. If you find nothing new worth flagging, post one top-level PR comment (via
-               `gh pr comment`) saying so plainly and why. If a previous run already said that and
-               nothing has changed, say nothing at all.
+            9. `event` and `body` are mandatory and mechanical — every run ends with exactly one of these
+               two outcomes, no third option:
+               - **Zero blocking findings** (including zero findings at all): `event: "APPROVE"`. `body`
+                 starts with the exact sentence `This PR is ready to merge.` — verbatim, that's what a
+                 human or claude-pr-mention.yml greps for — then one line on what you checked, then any
+                 advisory notes clearly labeled optional ("Non-blocking:" / "Optional:").
+               - **One or more blocking findings**: `event: "REQUEST_CHANGES"`. `body` starts with the
+                 exact sentence `This PR is NOT ready to merge.` — verbatim — then a short bulleted list
+                 of the blocking findings by file:line, each pointing at its inline comment.
+               Convergence is the point of this step: if every blocking finding from a prior round on
+               this PR is now fixed or was argued down in its thread, and this pass found no new blocking
+               issue, that is an APPROVE — say so plainly, don't manufacture a new blocking finding to
+               avoid approving, and don't restate advisory notes that were already made and not acted on.
+               Style/simplification/efficiency/convention findings NEVER produce REQUEST_CHANGES, no
+               matter how many of them there are or how strongly you'd word them standalone.
+
+               If the `/reviews` call fails for a reason unrelated to comment anchoring (permissions,
+               network, a pending-review conflict) and retrying doesn't fix it, the verdict sentence
+               still has to reach the PR — fall back to `gh pr comment` with the same `body` text. A
+               missing inline comment is a smaller loss than a PR with no explicit ready/not-ready
+               statement on it at all.
 
             Be direct and substantive. Disagreeing with the author's choices is the point of this review,
             but every disagreement must be grounded in a concrete scenario in the actual code, never a
             style preference. Once you've said everything worth saying about a PR, stop — do not keep
-            hunting for something new to add on every re-run just because the action ran again.
+            hunting for something new to add on every re-run just because the action ran again. The goal
+            of this workflow is to get a PR to a clean, explicit APPROVE, not to sustain a stream of
+            findings — treat "nothing left to say" as success, not as a reason to lower the bar for what
+            counts as a finding.
