@@ -28,6 +28,8 @@ Options
   --shipment <wf>      Send to Amazon workflow id, or its confirm_content_step
                        URL. Labels every ready-to-send SKU, one label per unit.
   --format <fmt>       ${'Override label layout, e.g. ItemLabel_Letter_30, thermal'}
+  --combine            Pack all SKUs onto shared sheets (pre-Phase-5 behavior).
+                       Default is one sheet-aligned PDF per SKU.
   --dry-run            Download the PDFs, never send to the printer
   --headed             Force a visible browser window
   --json               Print machine-readable results (for skill use)
@@ -106,7 +108,7 @@ async function main(): Promise<number> {
       const file = flags.get('file')?.[0];
       const shipment = flags.get('shipment')?.[0];
       const format = flags.get('format')?.[0] as LabelFormat | undefined;
-      const printOptions = { dryRun: flags.has('dry-run'), headed: flags.has('headed') };
+      const printOptions = { dryRun: flags.has('dry-run'), headed: flags.has('headed'), combine: flags.has('combine') };
 
       let results: LabelResult[];
       if (shipment) {

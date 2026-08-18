@@ -64,11 +64,17 @@ every run behaves like a dry run regardless.
 
 ### Multiple SKUs
 
-SKUs passed in the same run that share a label format are combined into a
-single PDF — this mirrors how Seller Central's own Print Item Labels page
-batches SKUs, so printing a whole shipment's worth of labels is one PDF, not
-one per SKU. Multiple SKUs with *different* formats still print in one run;
-each format just gets its own PDF.
+By default, every SKU gets its own sheet(s): each SKU's PDF is fetched
+individually and the results are merged into one file per format group, so a
+stack of printed sheets can be split by SKU without reading barcodes.
+Multiple SKUs with *different* formats still print in one run; each format
+just gets its own merged PDF.
+
+Pass `--combine` to opt back into the old behavior — Seller Central's own
+Print Item Labels page packs a format group's SKUs onto shared sheets
+contiguously (a SKU's labels start wherever the previous SKU's ended,
+mid-sheet), which uses fewer sheets overall but can't be split by SKU without
+reading barcodes.
 
 Repeat `--sku`/`--qty` for a handful of SKUs on the command line — each `--qty`
 applies to the `--sku` immediately before it:
@@ -133,8 +139,8 @@ npm run shipment -- --shipment wf7f067182-69c7-4aa8-bb32-5c3cdee02ba5
 ```
 
 Worth doing first — a real shipment can be thousands of labels (the example
-above is 82 pages of 30-up), so it's cheap insurance against printing the
-wrong workflow.
+above is 2433 units across 12 SKUs, 30-up), so it's cheap insurance against
+printing the wrong workflow.
 
 Reading a shipment and printing its labels share one browser session and one
 sign-in, so `--shipment` takes roughly a minute end to end (a shipment can be
@@ -152,6 +158,7 @@ Flags:
 | `--file <path>` | JSON array of `{ sku, quantity, format?, title? }` — see [data/products.example.json](data/products.example.json) |
 | `--shipment <wf>` | Send to Amazon workflow id (or its URL) — labels every ready-to-send SKU, one label per unit |
 | `--format <fmt>` | `ItemLabel_Letter_30` (default), `ItemLabel_A4_27`, `ItemLabel_A4_24`, `ItemLabel_A4_21`, `ItemLabel_A4_40_52x29`, `ItemLabel_A4_44_48x25`, or `thermal` |
+| `--combine` | Pack a format group's SKUs onto shared sheets (pre-Phase-5 behavior) instead of one sheet per SKU |
 | `--dry-run` | Download only, never send to the printer |
 | `--headed` | Force a visible browser window |
 | `--json` | Machine-readable output (for skill use) |
@@ -275,7 +282,7 @@ npm run list -- --search "coffee"
 | [src/auth.ts](src/auth.ts) | Interactive login, session detection |
 | [src/pages/inventoryPage.ts](src/pages/inventoryPage.ts) | Manage Inventory + Print Item Labels page object |
 | [src/pages/shipmentPage.ts](src/pages/shipmentPage.ts) | Send to Amazon content step — reads a shipment's SKUs and unit counts |
-| [src/tasks/printLabels.ts](src/tasks/printLabels.ts) | Batch flow: group by format → print-labels page → set quantities → submit → save |
+| [src/tasks/printLabels.ts](src/tasks/printLabels.ts) | Batch flow: group by format → fetch each SKU's PDF and merge with `pdf-lib` (default), or one print-labels page load per group (`--combine`) → save |
 | [src/tasks/shipmentLabels.ts](src/tasks/shipmentLabels.ts) | Turns a shipment workflow into label requests |
 | [src/printer.ts](src/printer.ts) | Printer handoff — CUPS `lp` on macOS/Linux, `pdf-to-printer` (bundled SumatraPDF) on Windows |
 
@@ -285,8 +292,26 @@ Verified 2026-08-12 against a live account. The print flow bypasses the
 Manage Inventory grid entirely — Seller Central exposes a dedicated page,
 `/fba/printitemlabel/?mSku.0=<sku>&mSku.1=<sku>...`, that accepts a batch of
 SKUs directly in the URL query string and renders one row per SKU with its
-own quantity field. `printLabels` groups requests by format and does one
-page load + one Print click per group, producing one PDF per group.
+own quantity field. `printLabels` groups requests by format.
+
+By default (Phase 5, verified 2026-08-18), each group's SKUs are **not**
+loaded as a page at all: for each SKU, `InventoryPage.fetchLabelPdf()` calls
+Seller Central's own private `POST /fba/printitemlabel/ping/getPdfContent`
+endpoint directly (found by patching `window.fetch` on the live page and
+observing real traffic) and gets that SKU's PDF back — already ending on a
+sheet boundary, since `pageType`/`labelType` are the same controls the UI
+itself sets. The per-SKU PDFs are then concatenated with `pdf-lib` into one
+merged file per group, so every SKU starts on its own sheet in a single
+printer job. `fnsku` is accepted by the endpoint but ignored — the server
+resolves the barcode from `msku` — and an unknown `msku` **500s** rather than
+being silently dropped, which `printLabels` treats as "skipped: not found."
+The response's `content-type` is `application/octet-stream`, not
+`application/pdf`, so the code checks for a `%PDF-` magic-byte header
+instead of trusting the header. `--combine` opts back into the pre-Phase-5
+behavior: one page load + one Print click per group, which is how Seller
+Central's own UI packs a group's SKUs onto shared sheets contiguously. See
+[docs/PROJECT_CONTEXT.md](docs/PROJECT_CONTEXT.md) §7 for the full
+investigation, including why Amazon has no native per-SKU sheet-break option.
 
 A few things worth knowing if selectors ever need re-verifying (Seller
 Central's DOM varies by account/A-B bucket):

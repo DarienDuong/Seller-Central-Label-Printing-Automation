@@ -1,13 +1,14 @@
 # Project context & status
 
 Handoff doc for starting a fresh Claude Code / Codex session on this repo without
-re-deriving everything. Last updated **2026-08-18** (main @ `d09ea1a`, which
+re-deriving everything. Last updated **2026-08-18** (main @ `6170d67`, which
 includes PR #8 / 4B and its follow-ups from PR #13, the verified-printer doc
-pass in PR #17, the Phase 5 plan / SP-API research in PR #18, and the PR-review
-cost cut in PR #19 — all merged, see below). Not yet on `main`: the Windows
-print mechanism moved off the registered PDF handler's Print verb (Edge or
-Acrobat, whichever a machine has registered) onto the `pdf-to-printer` npm
-package, which bundles its own SumatraPDF — see §7.
+pass in PR #17, the Phase 5 planning + SP-API research doc pass in PR #18,
+a cost cut to the Claude PR review workflow in PR #19, and Phase 5's
+implementation in PR #20 — all merged, see below. Also includes PR #21: the
+Windows print mechanism moved off the registered PDF handler's Print verb
+(Edge or Acrobat, whichever a machine has registered) onto the
+`pdf-to-printer` npm package, which bundles its own SumatraPDF — see §7.)
 
 ---
 
@@ -52,10 +53,10 @@ still unverified on real hardware.
 | --- | --- | --- |
 | 1–3 | login, print by SKU, `--file` batches, `list` inventory | ✅ done, live-verified |
 | 4A | **shipment mode** (`--shipment`) | ✅ done, merged in PR #6 |
-| 4B | **Windows printing support** | 🟡 merged (PR #8 + follow-ups in PR #13). macOS/CUPS path live-verified 2026-08-18; **Windows still unverified on real hardware** |
+| 4B | **Windows printing support** | 🟡 merged (PR #8 + follow-ups in PR #13; print mechanism replaced by `pdf-to-printer` in PR #21). macOS/CUPS path live-verified 2026-08-18; **Windows still unverified on real hardware** |
 | 4C | **MCP server** | ⬜ not started |
 | 4D | **teammate onboarding docs** | ⬜ not started |
-| 5 | **one sheet per SKU by default** (`--combine` opts back into today's behavior) | ⬜ planned, not started — live exploration done, see §7 |
+| 5 | **one sheet per SKU by default** (`--combine` opts back into today's behavior) | ✅ implemented + live-verified 2026-08-18, merged in PR #20 — see §7 |
 
 Sequencing 4B/4C/4D was the owner's call: shipment mode first (done), the rest
 after. Confirm with the owner before starting any of C/D.
@@ -64,23 +65,26 @@ after. Confirm with the owner before starting any of C/D.
 4C's MCP tool schema wraps that surface — building the schema first means
 reworking it immediately after.
 
-`main` (`d09ea1a`) contains Phases 1–3, 4A, 4B (PR #8 and its follow-ups in
+`main` (`6170d67`) contains Phases 1–3, 4A, 4B (PR #8 and its follow-ups in
 PR #13, both squash-merged — their branch history isn't preserved on `main`,
 so don't try to rebase a leftover branch onto it expecting a fast-forward;
 cherry-pick instead), and the Claude Code GitHub Actions review workflow
 (PRs #9, #11, #12, #14, #15, #19 — automated PR review and its own upkeep,
 not a project phase), the context doc you're reading (PR #7), a doc-accuracy
-pass in PR #17, and the Phase 5 plan / SP-API research in PR #18. PR #13
-carried everything from #8's review that landed
-after #8 had already merged, plus several more rounds of review on #13
-itself — job-identity matching in the print-queue poll (by `DocumentName`
-substring, not job id), surfacing unconfirmed print handoffs as structured
-data instead of plain-text prose or silent success, routing all log output
-to stderr so `--json` is actually pipeable, and this file's own accuracy
+pass in PR #17, and the Phase 5 planning + SP-API research write-up in PR
+#18. PR #13 carried everything from #8's review that landed after #8 had
+already merged, plus several more rounds of review on #13 itself —
+job-identity matching in the print-queue poll (by `DocumentName` substring,
+not job id), surfacing unconfirmed print handoffs as structured data
+instead of plain-text prose or silent success, routing all log output to
+stderr so `--json` is actually pipeable, and this file's own accuracy
 (multiple times — it kept drifting behind the code each round).
 PR #4 ("Added my print label script in project sub-directory") — the
 stale/superseded PR from before the rewrite — is now **closed**
-(2026-08-17). Nothing further to do with it.
+(2026-08-17). Nothing further to do with it. Phase 5's implementation
+(per-SKU sheet breaks, `--combine` to opt back into packed output) merged
+in **PR #20**. The Windows print-mechanism switch to `pdf-to-printer`
+merged in **PR #21** — see the status table above and §7 below.
 
 ---
 
@@ -118,9 +122,12 @@ Common flags: `--dry-run` (download PDF, never print), `--headed`, `--json`,
 | `src/logger.ts` | Console logger — everything writes to stderr so `--json`'s stdout stays pure JSON |
 | `src/types.ts` | `LabelRequest`, `LabelResult`, `ShipmentItem`, `InventoryItem`, `LabelFormat` |
 
-~1,310 lines of TypeScript total (dropped from ~1,570 when the Windows
-print path was simplified from default-printer-flip + queue-polling to a
-single `pdf-to-printer` call — see §7). Small enough to read end to end.
+~1,510 lines of TypeScript total on `main` (~1,140 before 4B merged; ~1,730
+after Phase 5's per-SKU merge path landed in PR #20, which also added
+`pdf-lib` — pure JS, no native deps — as a runtime dependency; then back
+down when the Windows print path was simplified from default-printer-flip
++ queue-polling to a single `pdf-to-printer` call in PR #21 — see §7).
+Small enough to read end to end.
 
 ---
 
@@ -348,12 +355,11 @@ rubber-stamp. PR #13 has been through several more rounds on top of that
 (7 commits as of `e261995`), including the two just described. See each
 PR's thread for the full list. That review history is against the
 `Start-Process -Verb Print` mechanism, since superseded twice more on
-2026-08-18 — first by manual SumatraPDF, then by `pdf-to-printer` (not yet
-through its own PR review, and not yet even its own PR) — the queue-
-identity and `unconfirmed`-vs-exit-code lessons carried over conceptually
-(`print()`'s resolved promise plays the role the queue poll used to), but
-the new code itself hasn't been reviewed yet. The gate left is a real
-Windows run plus review of the `pdf-to-printer` change.
+2026-08-18 — first by manual SumatraPDF, then by `pdf-to-printer`, merged
+as PR #21 — the queue-identity and `unconfirmed`-vs-exit-code lessons
+carried over conceptually (`print()`'s resolved promise plays the role the
+queue poll used to). The gate left is a real Windows run against physical
+hardware — still not done, see the `pdf-to-printer` paragraph above.
 
 Still open: setup docs need `nvm-windows` notes — it ignores `.nvmrc`.
 
@@ -367,7 +373,12 @@ GPT Actions is a separate non-MCP protocol — out of scope unless asked.
 **4D — onboarding docs.** repo access → install → `.env` → their own
 `npm run login` → MCP registration, with per-OS notes.
 
-**Phase 5 — one sheet per SKU by default.** Planned 2026-08-18, not started.
+**Phase 5 — one sheet per SKU by default.** Planned and implemented
+2026-08-18 on branch `phase-5-per-sku-labels`, merged as PR #20. The
+investigation below (Amazon has no native option, the private endpoint,
+what SP-API would/wouldn't buy) was done before writing any code and still
+describes the current implementation; the verification results at the end
+are what actually ran against the live account.
 
 *The problem.* Today a run puts every SKU that shares a format onto one
 print-labels page load, and Amazon packs the resulting labels **contiguously**
@@ -450,12 +461,58 @@ with no native deps, which matters because 4B's Windows support is still
 unverified and a native build step would make that worse. Response bytes must
 be read as `arrayBuffer` (base64 across the `page.evaluate` boundary), **not**
 `text()`, which mangles binary. Keep the pace deliberate between requests per
-the Amazon-terms constraint in §6.
+the Amazon-terms constraint in §6 — `printLabels.ts` sleeps 400ms between
+every per-SKU fetch across the whole run, not just within one format group
+(an earlier version reset the pacing at each group boundary, so the last
+SKU of one group and the first of the next fetched back-to-back).
 
-*Verification.* Per §8, against the artifact, not the absence of errors: one
-PDF per SKU, each `ceil(qty / 30)` pages, and — the actual claim — the first
-label of each PDF sitting at sheet position 1. Total label count must be
-unchanged, and `--combine` must reproduce the 82-page baseline exactly.
+One more finding, only visible once actually calling the endpoint from code
+rather than the browser's network panel: the response's `content-type` is
+`application/octet-stream; charset=UTF-8`, **not** `application/pdf`, even
+though the bytes are a real PDF. `InventoryPage.fetchLabelPdf()` originally
+threw on that header before this was caught live; it now checks for the
+`%PDF-` magic-byte header on the decoded bytes instead of trusting
+`content-type` — consistent with the dead end in §5 about not trusting a
+response's metadata over its actual body.
+
+An unknown/invalid `msku` still needs a live page to call from: the fetch
+runs inside the page via `page.evaluate`, so `fetchLabelPdf()`'s first call
+in a run needs the page already parked on a Seller Central origin.
+`printLabels()` does one `openPrintLabelsPage([<any real sku>])` navigation
+up front for this (an empty `mSku` query string never renders the page
+chrome `printLabels()` waits on, so it can't be a bare origin visit).
+
+*Verification — actually run, not just typechecked (2026-08-18, live
+account, branch `phase-5-per-sku-labels`):*
+- Two SKUs, qty 2 and 22 (both ≤ 30, would pack onto one shared sheet under
+  the old default): default (no `--combine`) produced a merged PDF with
+  **2 pages** — one per SKU, `ceil(2/30) + ceil(22/30) = 1 + 1 = 2` — while
+  `--combine` on the same two SKUs reproduced the old packed behavior
+  exactly, **1 page** (2 + 22 = 24 ≤ 30). Same inputs, both flags, both
+  correct per their own contract.
+- An unknown SKU alongside a real one: the endpoint 500s for the unknown
+  one (matching the §7 finding that unknown `msku` errors rather than
+  silently dropping), `printLabels()` records it `status: 'skipped'` with
+  the API error in `message`, and the real SKU's PDF still saves and
+  downloads correctly — one bad SKU doesn't sink the group.
+- The live 18-SKU / 4,680-unit shipment behind `wf7f067182-…` (still open
+  as of this verification): `--shipment ... --dry-run` with the new default
+  produced a merged PDF with exactly **165 pages** —
+  `sum(ceil(units / 30) for each SKU) = 165`, confirmed by summing the same
+  `readShipmentItems()` output independently. All 18 SKUs came back
+  `status: 'downloaded'`, none skipped or failed. (This is a different,
+  larger shipment than the 12-SKU/2,433-unit one referenced elsewhere in
+  this doc as the packed-behavior baseline — both were live on the account
+  on 2026-08-18.)
+- Every source PDF is a separate document merged via `pdf-lib`'s
+  `copyPages`, so "first label of each SKU's PDF sits at sheet position 1"
+  holds by construction, not as something that needed separate checking:
+  each source document necessarily starts its own page 1.
+- Not yet verified: an actual print (only `--dry-run` so far — no reason to
+  expect the merged PDF prints any differently from the DOM-path PDFs
+  already print-verified in 4B, since it's the same PDF library on the
+  printer side either way, but this hasn't been physically confirmed for
+  Phase 5's merged output specifically).
 
 **Unresolved bug report.** The owner once reported
 `Target page, context or browser has been closed` with `shipmentToRequests` in
