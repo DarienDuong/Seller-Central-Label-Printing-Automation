@@ -38,6 +38,14 @@ name: Claude PR Comment Reply
 #
 # Requires the same GitHub App + ANTHROPIC_API_KEY secret as claude-pr-review.yml.
 # Fork PRs are skipped for the same reason as there: no secrets, read-only token.
+#
+# COST NOTE (2026-08-18): switched from Sonnet to Haiku 4.5. This workflow
+# fires on every reply in a review thread, including non-substantive ones the
+# prompt no-ops on — the no-op check alone was paying full Sonnet job cost.
+# Adjudicating whether a pushback holds up is more judgment-heavy than the
+# mention workflow's decision tree, so if replies start conceding points they
+# shouldn't (or holding ground incorrectly), move this back to Sonnet first —
+# it's the more likely of the two to need it.
 on:
   pull_request_review_comment:
     types: [created]
@@ -78,8 +86,8 @@ jobs:
           # note in the prompt. Read/Grep/Glob to check the reply's claims
           # against the real files; Write to build the payload step 4 posts.
           claude_args: >-
-            --model claude-sonnet-5
-            --max-turns 20
+            --model claude-haiku-4-5-20251001
+            --max-turns 15
             --allowedTools "Bash(gh pr diff:*),Bash(gh api:*),Read,Grep,Glob,Write"
           prompt: |
             Someone just posted comment id ${{ github.event.comment.id }} on PR

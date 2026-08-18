@@ -26,6 +26,13 @@ name: Claude PR Mention
 #
 # Requires the same GitHub App + ANTHROPIC_API_KEY secret as the other two
 # Claude workflows. Fork PRs are skipped for the same reason as there.
+#
+# COST NOTE (2026-08-18): switched from Sonnet to Haiku 4.5. This workflow
+# fires on every @claude mention, and its job (check PR/review state via a
+# few `gh` calls, answer a mostly-mechanical question) doesn't need Sonnet's
+# depth — the merge-readiness path in particular is following an explicit
+# decision tree, not exercising judgment. If replies start missing nuance on
+# harder "why is this broken" questions, move back to Sonnet.
 on:
   issue_comment:
     types: [created]
@@ -67,8 +74,8 @@ jobs:
           # current state before answering; Write for review payloads if a
           # fresh full review turns out to be needed (step 3c).
           claude_args: >-
-            --model claude-sonnet-5
-            --max-turns 40
+            --model claude-haiku-4-5-20251001
+            --max-turns 25
             --allowedTools "Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh api:*),Bash(gh run list:*),Read,Grep,Glob,Write"
           prompt: |
             Someone just posted comment id ${{ github.event.comment.id }} on PR
