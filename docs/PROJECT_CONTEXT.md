@@ -4,8 +4,8 @@ Handoff doc for starting a fresh Claude Code / Codex session on this repo withou
 re-deriving everything. Last updated **2026-08-18** (main @ `7e5340b`, which
 includes PR #8 / 4B and its follow-ups from PR #13, plus the verified-printer
 doc pass in PR #17 — all merged, see below; Phase 5 is implemented and
-live-verified on branch `phase-5-per-sku-labels`, not yet merged — see the
-status table and §7 below).
+live-verified on branch `phase-5-per-sku-labels`, open as PR #20, not yet
+merged — see the status table and §7 below).
 
 ---
 
@@ -53,7 +53,7 @@ still unverified on real hardware.
 | 4B | **Windows printing support** | 🟡 merged (PR #8 + follow-ups in PR #13). macOS/CUPS path live-verified 2026-08-18; **Windows still unverified on real hardware** |
 | 4C | **MCP server** | ⬜ not started |
 | 4D | **teammate onboarding docs** | ⬜ not started |
-| 5 | **one sheet per SKU by default** (`--combine` opts back into today's behavior) | 🟡 implemented + live-verified 2026-08-18 on branch `phase-5-per-sku-labels`; not yet merged — see §7 |
+| 5 | **one sheet per SKU by default** (`--combine` opts back into today's behavior) | 🟡 implemented + live-verified 2026-08-18; PR #20 open, not yet merged — see §7 |
 
 Sequencing 4B/4C/4D was the owner's call: shipment mode first (done), the rest
 after. Confirm with the owner before starting any of C/D.
@@ -352,7 +352,8 @@ GPT Actions is a separate non-MCP protocol — out of scope unless asked.
 `npm run login` → MCP registration, with per-OS notes.
 
 **Phase 5 — one sheet per SKU by default.** Planned and implemented
-2026-08-18, on branch `phase-5-per-sku-labels` (not yet merged). The
+2026-08-18, on branch `phase-5-per-sku-labels`, open as PR #20 (not yet
+merged). The
 investigation below (Amazon has no native option, the private endpoint,
 what SP-API would/wouldn't buy) was done before writing any code and still
 describes the current implementation; the verification results at the end
