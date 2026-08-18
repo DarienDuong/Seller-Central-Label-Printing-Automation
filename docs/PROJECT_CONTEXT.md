@@ -379,7 +379,16 @@ split by SKU without reading barcodes, which is the actual complaint.
   Invalid values 500.
 - Speculative page-break params (`newPagePerSku`, `separatePages`,
   `pageBreakPerSku`, `onePagePerSku`, per-item `startNewPage`) all returned
-  **byte-identical** PDFs — silently ignored, not honored.
+  **byte-identical** PDFs. **Don't read too much into this, and don't spend
+  time guessing more names.** The endpoint accepts unknown JSON properties
+  without erroring, so a null result can't distinguish "no such feature" from
+  "wrong name", and the space of names is unbounded — it's the same trap as
+  the endpoint-guessing dead end in §5. What actually settles the question is
+  the *published* SP-API schema (§9): `createMarketplaceItemLabels` mirrors
+  this endpoint field for field and its complete request body has no
+  page-break parameter either. The `labelType` enum result above is the other
+  real evidence — `SINGLE` does change behavior, which shows the enum is the
+  axis Amazon exposes for layout, and it isn't per-SKU.
 
 So sheet separation has to be done client-side. **Merging per-SKU PDFs is the
 only route.**
