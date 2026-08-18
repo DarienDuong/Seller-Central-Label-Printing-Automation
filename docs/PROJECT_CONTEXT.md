@@ -99,8 +99,8 @@ Common flags: `--dry-run` (download PDF, never print), `--headed`, `--json`,
 | `src/logger.ts` | Console logger — everything writes to stderr so `--json`'s stdout stays pure JSON |
 | `src/types.ts` | `LabelRequest`, `LabelResult`, `ShipmentItem`, `InventoryItem`, `LabelFormat` |
 
-~1,570 lines of TypeScript total (on `fix/windows-printing-followups`;
-~1,140 on `main` before 4B). Small enough to read end to end.
+~1,570 lines of TypeScript total on `main` (~1,140 before 4B merged).
+Small enough to read end to end.
 
 ---
 
@@ -230,15 +230,15 @@ handler (and the run is paying the full 60s/copy for it) and is worth a
 follow-up fix.
 
 **The macOS/CUPS side of this same code IS now live-verified** (2026-08-18,
-on `main` @ `6803398`): `npm run print --dry-run` against real Seller
-Central inventory (SKUs K1-ZMUR-OZKB qty 2, YJ-B42Y-0VY3 qty 22) produced
-correct 30-up PDFs, and a real (non-dry-run) print of K1-ZMUR-OZKB qty 1 to
-a real CUPS printer (`Brother_DCP_L2550DW_series`) was confirmed to
-physically print correctly. This also verified, live rather than just by
-reading the diff: `--json` output is clean parseable JSON with no log
-noise mixed in (confirms the logger-to-stderr fix), and a confirmed print
-correctly reports `status: 'printed'` with no `message`/`unconfirmed`. Only
-Windows remains unverified.
+on `main` @ `6803398`): `npm run print --dry-run` against two representative
+SKUs from the live account (quantities 2 and 22) produced correct 30-up
+PDFs, and a real (non-dry-run) print of one of them (qty 1) to a real CUPS
+printer (`Brother_DCP_L2550DW_series`) was confirmed to physically print
+correctly. This also verified, live rather than just by reading the diff:
+`--json` output is clean parseable JSON with no log noise mixed in
+(confirms the logger-to-stderr fix), and a confirmed print correctly
+reports `status: 'printed'` with no `message`/`unconfirmed`. Only Windows
+remains unverified.
 
 The fixed-timer design (a flat sleep instead of polling the queue) was
 tried and reverted after review — it raced the async PDF handler and could
