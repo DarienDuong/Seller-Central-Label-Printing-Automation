@@ -59,9 +59,9 @@ substring, not job id), surfacing unconfirmed print handoffs as structured
 data instead of plain-text prose or silent success, routing all log output
 to stderr so `--json` is actually pipeable, and this file's own accuracy
 (multiple times — it kept drifting behind the code each round).
-PR #4 ("Added my print label script in project sub-directory") is still **open**
-and is a stale/superseded PR from before the rewrite — check with the owner
-before touching it.
+PR #4 ("Added my print label script in project sub-directory") — the
+stale/superseded PR from before the rewrite — is now **closed**
+(2026-08-17). Nothing further to do with it.
 
 ---
 
