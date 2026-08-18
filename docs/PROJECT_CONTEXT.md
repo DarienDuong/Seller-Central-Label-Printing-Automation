@@ -63,22 +63,25 @@ after. Confirm with the owner before starting any of C/D.
 4C's MCP tool schema wraps that surface — building the schema first means
 reworking it immediately after.
 
-`main` (`7e5340b`) contains Phases 1–3, 4A, 4B (PR #8 and its follow-ups in
+`main` (`d09ea1a`) contains Phases 1–3, 4A, 4B (PR #8 and its follow-ups in
 PR #13, both squash-merged — their branch history isn't preserved on `main`,
 so don't try to rebase a leftover branch onto it expecting a fast-forward;
 cherry-pick instead), and the Claude Code GitHub Actions review workflow
-(PRs #9, #11, #12, #14, #15 — automated PR review and its own upkeep, not a
-project phase), the context doc you're reading (PR #7), and a doc-accuracy
-pass in PR #17. PR #13 carried everything from #8's review that landed
-after #8 had already merged, plus several more rounds of review on #13
-itself — job-identity matching in the print-queue poll (by `DocumentName`
-substring, not job id), surfacing unconfirmed print handoffs as structured
-data instead of plain-text prose or silent success, routing all log output
-to stderr so `--json` is actually pipeable, and this file's own accuracy
+(PRs #9, #11, #12, #14, #15, #19 — automated PR review and its own upkeep,
+not a project phase), the context doc you're reading (PR #7), a doc-accuracy
+pass in PR #17, and the Phase 5 planning + SP-API research write-up in PR
+#18. PR #13 carried everything from #8's review that landed after #8 had
+already merged, plus several more rounds of review on #13 itself —
+job-identity matching in the print-queue poll (by `DocumentName` substring,
+not job id), surfacing unconfirmed print handoffs as structured data
+instead of plain-text prose or silent success, routing all log output to
+stderr so `--json` is actually pipeable, and this file's own accuracy
 (multiple times — it kept drifting behind the code each round).
 PR #4 ("Added my print label script in project sub-directory") — the
 stale/superseded PR from before the rewrite — is now **closed**
-(2026-08-17). Nothing further to do with it.
+(2026-08-17). Nothing further to do with it. Phase 5's implementation is on
+branch `phase-5-per-sku-labels`, open as **PR #20**, not yet merged — see
+the status table above and §7 below.
 
 ---
 
@@ -116,7 +119,7 @@ Common flags: `--dry-run` (download PDF, never print), `--headed`, `--json`,
 | `src/logger.ts` | Console logger — everything writes to stderr so `--json`'s stdout stays pure JSON |
 | `src/types.ts` | `LabelRequest`, `LabelResult`, `ShipmentItem`, `InventoryItem`, `LabelFormat` |
 
-~1,570 lines of TypeScript total on `main` (~1,140 before 4B merged); ~1,690
+~1,570 lines of TypeScript total on `main` (~1,140 before 4B merged); ~1,730
 on the unmerged Phase 5 branch (`InventoryPage.fetchLabelPdf()` plus the
 merge path in `printLabels.ts`). Small enough to read end to end. Phase 5
 also adds `pdf-lib` (pure JS, no native deps) as a runtime dependency.
