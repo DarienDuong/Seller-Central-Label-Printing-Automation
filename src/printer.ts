@@ -1,8 +1,24 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { platform } from 'node:os';
+import { createRequire } from 'node:module';
+import type { PrintOptions } from 'pdf-to-printer';
 import { config } from './config.js';
 import { log } from './logger.js';
+
+// `pdf-to-printer` ships as CJS, and Node's static named-export detection
+// for CJS modules loaded via `import { ... } from` is best-effort — it
+// picked up `print` but not `getPrinters`, throwing "does not provide an
+// export named 'getPrinters'" at module load. A real CJS `require` (via
+// `createRequire`) sidesteps that static analysis entirely and always sees
+// the whole `module.exports` object, so it can't have this problem; types
+// come from a type-only import instead, which doesn't touch the runtime
+// binding and so doesn't hit the same interop issue.
+const require = createRequire(import.meta.url);
+const pdfToPrinter = require('pdf-to-printer') as {
+  print: (pdf: string, options?: PrintOptions) => Promise<void>;
+};
+const { print: printPdfWindows } = pdfToPrinter;
 
 const run = promisify(execFile);
 const isWindows = platform() === 'win32';
@@ -63,97 +79,95 @@ async function listPrintersCups(): Promise<string[]> {
 
 // --- Windows: no CUPS, no CLI print-to-named-printer for PDFs -----------
 //
-// There's no Windows equivalent of `lp -d <printer>`. An earlier version of
-// this used the registered PDF handler's "Print" shell verb
-// (`Start-Process -Verb Print`), which on every Windows box resolves to
-// Edge — and Edge's Print verb opens Edge and shows its own print dialog
-// rather than printing silently, so every run needed a human to click
-// "Print" in that popup. That defeats the point of automating this at all,
-// so this now shells out to SumatraPDF instead: a free, portable PDF viewer
-// (no install/admin rights needed) whose `-print-to <printer> -silent`
-// flags print with no UI at all, and whose process only exits once the job
-// has actually been submitted — so a clean exit *is* the confirmation,
-// unlike the old approach, which had to poll the print queue afterward to
-// guess whether Edge had actually submitted the job yet.
+// There's no Windows equivalent of `lp -d <printer>`. Two earlier versions
+// of this tried to route around that gap and both depended on whatever PDF
+// viewer happened to be registered on the machine:
+//   1. The registered PDF handler's "Print" shell verb
+//      (`Start-Process -Verb Print`) — assumed to resolve to Edge (on every
+//      Windows box), but on the machine that actually surfaced the bug it
+//      was Acrobat Reader. Either way, that verb pops its own print dialog
+//      instead of printing silently, so every run needed a human to click
+//      "Print" in a popup — the opposite of automated.
+//   2. A manually-downloaded, unmanaged copy of SumatraPDF.exe, shelled out
+//      to directly. That fixed the popup, but pushed a step onto every
+//      teammate's setup that lives outside `npm install` — not a project
+//      dependency, easy to end up on the wrong PATH, and one more thing to
+//      go stale silently.
+//
+// This uses the `pdf-to-printer` npm package for the actual print: it
+// bundles its own copy of SumatraPDF *inside the package*, so `npm install`
+// is the only setup step (same as everything else in this repo), and it
+// drives that bundled binary directly rather than whatever's registered as
+// the system's PDF handler — so it isn't at the mercy of a teammate's Edge
+// vs. Acrobat vs. anything-else default. `print()` targets a printer by
+// name (`-print-to`, silent by default) and its promise only resolves once
+// the job has been handed to the bundled Sumatra process, so a clean
+// resolve *is* the confirmation — no default-printer juggling, no
+// queue-polling.
+//
+// Printer *listing/resolution*, though, deliberately does NOT use the same
+// package's `getPrinters()` — it has a real, unfixed upstream bug
+// (artiebits/pdf-to-printer#484, open since 2025, several people still
+// hitting it with no workaround offered). It parses `Get-CimInstance`'s
+// PowerShell console output by splitting each line on `:`; when a
+// printer's `PrinterPaperNames` list is long enough to wrap onto a
+// continuation line with no colon on it (routine for real printers with
+// many supported paper sizes — this is what happened with the printer this
+// was tested against), that line's `value` comes back `undefined` and its
+// `.match(...)` call throws `Cannot read properties of undefined (reading
+// 'match')`. `print()` itself doesn't go through that parser at all, so
+// only listing was affected. Simplest fix: query just the printer name
+// ourselves — `-ExpandProperty Name` prints one bare name per line, with
+// nothing else to wrap or mis-parse.
 //
 // Everything here is deliberately loud on failure. The CUPS path gets that
 // for free (`lp` exits non-zero on a bad `-d`); `resolvePrinterWindows`
 // below gives Windows the same property by validating PRINTER_NAME against
-// the installed printers before ever invoking SumatraPDF.
+// the installed printers before ever calling `print()`.
 
 function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-/**
- * Run a PowerShell script. Values are passed as *environment variables*
- * (read inside the script as `$env:NAME`), never spliced into the script
- * text — printer names and paths routinely contain quotes, `$`, and spaces,
- * and splicing them produced silently-wrong filters.
- */
-async function runPowerShell(script: string, vars: Record<string, string> = {}): Promise<string> {
-  const { stdout } = await run(
-    'powershell.exe',
-    ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference='Stop'; ${script}`],
-    { env: { ...process.env, ...vars } },
-  );
-  return stdout.trim();
+async function queryPrinterNamesWindows(): Promise<string[]> {
+  const { stdout } = await run('powershell.exe', [
+    '-NoProfile',
+    '-NonInteractive',
+    '-Command',
+    'Get-CimInstance -ClassName Win32_Printer | Select-Object -ExpandProperty Name',
+  ]);
+  return stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
 }
 
 /**
- * Resolve PRINTER_NAME to the exact string Windows uses for it. Matching via
- * `Where-Object -eq` (case-insensitive, same as Windows itself) instead of a
- * WQL `-Filter` string sidesteps WQL's own quoting rules entirely — WQL
- * treats `\` as an escape character inside a string literal, so a network
- * printer name like `\\PRINTSERVER\Zebra ZD420` silently matched nothing
- * under a filter-string approach. Every later step uses this resolved name,
- * so a case difference between `.env` and Windows can't cause a false
- * "did the set actually take?" mismatch downstream.
+ * Resolve PRINTER_NAME to the exact string Windows uses for it
+ * (case-insensitive, same as Windows itself) — so a typo'd or stale `.env`
+ * value fails loudly here, before `print()` is ever called, rather than
+ * SumatraPDF silently doing something unexpected with an unrecognized
+ * printer argument.
  */
 async function resolvePrinterWindows(name: string): Promise<string> {
-  const actual = await runPowerShell(
-    '(Get-CimInstance -ClassName Win32_Printer | Where-Object { $_.Name -eq $env:SC_PRINTER } | Select-Object -First 1).Name',
-    { SC_PRINTER: name },
-  );
-  if (!actual) {
+  const names = await queryPrinterNamesWindows();
+  const match = names.find((n) => n.toLowerCase() === name.toLowerCase());
+  if (!match) {
     throw new Error(
       `No Windows printer matches PRINTER_NAME "${name}". Run \`npm run print -- --printers\` and copy the name exactly.`,
     );
   }
-  return actual;
-}
-
-/**
- * Print one copy via SumatraPDF's silent CLI. `-print-to` targets a named
- * printer directly (no default-printer juggling needed, unlike the old
- * Edge-verb approach); `-silent` suppresses all UI; `-exit-when-done` makes
- * the process wait until the job is actually handed to the spooler before
- * exiting, so a clean (zero) exit code *is* the print confirmation — no
- * queue-polling required to find out whether it worked.
- */
-async function printOneCopyWindows(pdfPath: string, printerName: string): Promise<void> {
-  try {
-    await run(config.sumatraPath, ['-print-to', printerName, '-silent', '-exit-when-done', pdfPath]);
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'ENOENT') {
-      throw new Error(
-        `Can't find SumatraPDF at "${config.sumatraPath}". Silent Windows printing needs the portable ` +
-          `SumatraPDF.exe (free, no install/admin rights required) — download it from ` +
-          `https://www.sumatrapdfreader.org/download-free-pdf-viewer, then either put it on PATH or set ` +
-          `SUMATRA_PATH in .env to its full path.`,
-      );
-    }
-    throw new Error(`SumatraPDF failed to print "${pdfPath}" to "${printerName}": ${errText(err)}`);
-  }
+  return match;
 }
 
 async function sendToPrinterWindows(pdfPath: string, copies: number): Promise<SendResult> {
   const target = await resolvePrinterWindows(config.printerName);
 
-  for (let i = 0; i < copies; i++) {
-    log.step(`Printing copy ${i + 1}/${copies} of ${pdfPath} to "${target}" via SumatraPDF`);
-    await printOneCopyWindows(pdfPath, target);
+  log.step(`Printing ${copies} cop${copies === 1 ? 'y' : 'ies'} of ${pdfPath} to "${target}" via pdf-to-printer`);
+  try {
+    await printPdfWindows(pdfPath, { printer: target, copies, silent: true });
+  } catch (err) {
+    throw new Error(`pdf-to-printer failed to print "${pdfPath}" to "${target}": ${errText(err)}`);
   }
 
   log.done(`Sent ${copies} job(s) to ${target}.`);
@@ -161,12 +175,8 @@ async function sendToPrinterWindows(pdfPath: string, copies: number): Promise<Se
 }
 
 async function listPrintersWindows(): Promise<string[]> {
-  const stdout = await runPowerShell('(Get-CimInstance -ClassName Win32_Printer).Name').catch((err: unknown) => {
+  return queryPrinterNamesWindows().catch((err: unknown) => {
     log.warn(`Could not query Windows printers — list may be incomplete: ${errText(err)}`);
-    return '';
+    return [];
   });
-  return stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
 }

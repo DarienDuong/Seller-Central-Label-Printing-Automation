@@ -13,9 +13,9 @@ structured input (`--file products.json`) and can emit structured output
 - Node **22** (an `.nvmrc` is included — run `nvm use`)
 - A Seller Central account with FBA/label permissions
 - Optional: a printer for auto-printing — CUPS on macOS/Linux (`lpstat -p`),
-  or on Windows any installed printer plus
-  [SumatraPDF](https://www.sumatrapdfreader.org/download-free-pdf-viewer)
-  (see [Printing on Windows](#printing-on-windows))
+  or any installed printer on Windows (silent printing there is handled by
+  the `pdf-to-printer` npm dependency, no extra install — see
+  [Printing on Windows](#printing-on-windows))
 
 ## Setup
 
@@ -166,28 +166,33 @@ either side. But the mechanism is very different, because Windows has no
 CLI equivalent of `lp -d <printer>`:
 
 - There's no built-in way to send a PDF to a *named* printer from the
-  command line. An earlier version of this used the registered PDF
-  handler's "Print" shell verb (`Start-Process -Verb Print`), which on
-  every Windows box resolves to Edge — and Edge's Print verb opens Edge and
-  shows its own print dialog rather than printing silently, which is why
-  that version needed someone to click "Print" in a popup after every run.
-- This now shells out to **[SumatraPDF](https://www.sumatrapdfreader.org/download-free-pdf-viewer)**
-  instead: a free, portable PDF viewer (no install/admin rights needed)
-  whose `-print-to <printer> -silent -exit-when-done` flags print straight
-  to a named printer with **no dialog at all**, and whose process only
-  exits once the job has actually been handed to the spooler — so a clean
-  exit code *is* the print confirmation, with no queue-polling or
-  default-printer juggling needed to find out whether it worked.
-- `SUMATRA_PATH` in `.env` points at the executable — the bare filename
-  `SumatraPDF.exe` if it's on PATH, or a full path otherwise. If it can't be
-  found, the run fails loudly with a download link rather than silently
-  falling back to something else.
-- `PRINTER_NAME` is resolved against the installed printers *before*
-  SumatraPDF is ever invoked — a name that matches nothing fails loudly
-  without attempting to print, rather than SumatraPDF silently doing
-  something unexpected with a bad printer argument.
-- `--printers` on Windows lists `Win32_Printer` names instead of CUPS
-  queues.
+  command line. Two earlier versions of this tried to route around that gap
+  by driving whatever PDF viewer happened to be registered on the machine —
+  first the registered handler's "Print" shell verb
+  (`Start-Process -Verb Print`), then a manually-downloaded copy of
+  SumatraPDF shelled out to directly. The shell-verb approach pops that
+  viewer's own print dialog instead of printing silently (assumed to be
+  Edge, but on the machine that actually hit this it was Acrobat Reader —
+  proving the point: whichever viewer is "the" PDF handler varies by
+  machine, so depending on it at all is fragile), and the manual-Sumatra
+  approach fixed the popup but pushed a real setup step onto every teammate
+  that lives outside `npm install`.
+- This now uses the **[`pdf-to-printer`](https://github.com/artiebits/pdf-to-printer)**
+  npm package instead, which is just a regular dependency — `npm install`
+  is the only setup step, nothing to separately download. It bundles its
+  own copy of SumatraPDF *inside the package* and drives that directly, so
+  it isn't at the mercy of whatever's registered as the system's PDF
+  handler. Its `print()` call targets a printer by name with `-print-to`
+  (silent by default, no dialog), and its promise only resolves once the
+  job has been handed off — so a clean resolve *is* the print confirmation,
+  with no queue-polling or default-printer juggling needed to find out
+  whether it worked.
+- `PRINTER_NAME` is resolved against the installed printers (via the same
+  package's `getPrinters()`) *before* `print()` is ever called — a name
+  that matches nothing fails loudly without attempting to print, rather
+  than silently doing something unexpected with a bad printer argument.
+- `--printers` on Windows lists the same printer names Windows itself
+  knows about, sourced through `pdf-to-printer` instead of CUPS queues.
 
 This Windows-specific path hasn't yet been verified against a real Windows
 box + physical printer — the code paths were written and typechecked but
@@ -243,8 +248,8 @@ npm run print -- --sku ABC-123 --qty 1 --dry-run
 npm run print -- --sku ABC-123 --qty 1
 ```
 
-If `PRINTER_NAME` doesn't match any `Win32_Printer` name, the run errors out
-before ever invoking SumatraPDF — it will not silently fall back to some
+If `PRINTER_NAME` doesn't match any installed printer, the run errors out
+before `print()` is ever called — it will not silently fall back to some
 other printer. (The match is case-insensitive, so a case difference between
 `.env` and Windows is fine; it just has to be the same name.)
 
@@ -272,7 +277,7 @@ npm run list -- --search "coffee"
 | [src/pages/shipmentPage.ts](src/pages/shipmentPage.ts) | Send to Amazon content step — reads a shipment's SKUs and unit counts |
 | [src/tasks/printLabels.ts](src/tasks/printLabels.ts) | Batch flow: group by format → print-labels page → set quantities → submit → save |
 | [src/tasks/shipmentLabels.ts](src/tasks/shipmentLabels.ts) | Turns a shipment workflow into label requests |
-| [src/printer.ts](src/printer.ts) | Printer handoff — CUPS `lp` on macOS/Linux, SumatraPDF silent print on Windows |
+| [src/printer.ts](src/printer.ts) | Printer handoff — CUPS `lp` on macOS/Linux, `pdf-to-printer` (bundled SumatraPDF) on Windows |
 
 ## How it works
 

@@ -5,7 +5,9 @@ re-deriving everything. Last updated **2026-08-18** (main @ `d09ea1a`, which
 includes PR #8 / 4B and its follow-ups from PR #13, the verified-printer doc
 pass in PR #17, the Phase 5 plan / SP-API research in PR #18, and the PR-review
 cost cut in PR #19 — all merged, see below). Not yet on `main`: the Windows
-print mechanism switched from Edge's Print verb to SumatraPDF, see §7.
+print mechanism moved off the registered PDF handler's Print verb (Edge or
+Acrobat, whichever a machine has registered) onto the `pdf-to-printer` npm
+package, which bundles its own SumatraPDF — see §7.
 
 ---
 
@@ -112,13 +114,13 @@ Common flags: `--dry-run` (download PDF, never print), `--headed`, `--json`,
 | `src/pages/shipmentPage.ts` | Send to Amazon content step — scrapes a shipment's SKUs/units |
 | `src/tasks/printLabels.ts` | group by format → print page → set quantities → submit → save |
 | `src/tasks/shipmentLabels.ts` | workflow id → `LabelRequest[]`, and the combined print path |
-| `src/printer.ts` | Printer handoff — CUPS `lp`/`lpstat` on macOS/Linux; on Windows, `Win32_Printer` (PowerShell/CIM) to resolve the printer name plus SumatraPDF for the actual silent print (see §7) |
+| `src/printer.ts` | Printer handoff — CUPS `lp`/`lpstat` on macOS/Linux; on Windows, the `pdf-to-printer` npm package (bundled SumatraPDF, `getPrinters()` to resolve the name, `print()` to send) (see §7) |
 | `src/logger.ts` | Console logger — everything writes to stderr so `--json`'s stdout stays pure JSON |
 | `src/types.ts` | `LabelRequest`, `LabelResult`, `ShipmentItem`, `InventoryItem`, `LabelFormat` |
 
-~1,350 lines of TypeScript total (dropped from ~1,570 when the Windows
+~1,310 lines of TypeScript total (dropped from ~1,570 when the Windows
 print path was simplified from default-printer-flip + queue-polling to a
-single SumatraPDF call — see §7). Small enough to read end to end.
+single `pdf-to-printer` call — see §7). Small enough to read end to end.
 
 ---
 
@@ -227,32 +229,51 @@ Windows has no CLI equivalent of `lp -d <printer>`. The original approach
 (PR #8 + follow-ups in PR #13) flipped the Windows default printer and
 fired `Start-Process -Verb Print` — the registered PDF handler's print
 verb — then polled the target printer's job queue to confirm the handoff.
-In practice that verb resolves to Edge on every Windows box, and **Edge's
-Print verb opens Edge and shows its own print dialog** rather than
-printing silently — so every run needed a human to click "Print" in a
-popup, defeating the point of automating it. Reported by the owner
-2026-08-18 after the first hands-on use.
+That verb pops whichever PDF viewer is registered on the machine, and that
+viewer's own print dialog with it, rather than printing silently — so every
+run needed a human to click "Print" in a popup, defeating the point of
+automating it. Reported by the owner 2026-08-18 after the first hands-on
+use; the code had assumed the registered handler would be Edge (present on
+every Windows box), but the machine that actually hit this had Acrobat
+Reader registered instead — which turned out to matter for what came next.
 
-Replaced the same day with **SumatraPDF** (a free, portable PDF viewer,
-`SUMATRA_PATH` in `.env`, default `SumatraPDF.exe` on PATH): its
-`-print-to <printer> -silent -exit-when-done` flags print straight to a
-named printer with **no dialog at all**, and the process only exits once
-the job has actually been handed to the spooler, so a clean exit code *is*
-the print confirmation. This eliminated the whole default-printer-flip /
-restore / queue-poll / `unconfirmed`-reason mechanism the old approach
-needed — `PRINTER_NAME` is still resolved to Windows's exact printer-name
-string first (`Win32_Printer`, same as before) so a bad name fails loudly
-before SumatraPDF is ever invoked, but there is no default printer to
-change or restore, and a clean SumatraPDF exit needs no separate
-confirmation step. `SendResult.unconfirmed` still exists on the type (macOS
-never sets it either) but nothing on the Windows path populates it now.
-`--printers` still lists `Win32_Printer` names on Windows. Implemented and
-typechecked, but **still not run against a real Windows machine with a
-physical printer** — the owner doesn't have warehouse PC access. Treat the
-first live run as the real test: install SumatraPDF, use `--dry-run`
-first, confirm `PRINTER_NAME` matches `Get-CimInstance Win32_Printer`,
-then a real one-copy print — watch for the label coming out with **no
-popup to click through** and no partial-success `unconfirmed` note.
+First replacement, same day: shell out directly to a manually-downloaded
+copy of **SumatraPDF** (`-print-to <printer> -silent -exit-when-done`,
+`SUMATRA_PATH` in `.env` pointing at it). That fixed the popup — Sumatra's
+own CLI prints with no UI, and its process only exits once the job's been
+handed to the spooler, so a clean exit *was* the confirmation — but it
+replaced one machine-dependency with another: every teammate now needed to
+separately download and place an executable outside of `npm install`,
+which is exactly the kind of per-machine setup step this project's
+"installable by a non-author" goal (§1) is supposed to avoid. Flagged by
+the owner as not a real fix for that reason.
+
+**Current approach, same day:** the **[`pdf-to-printer`](https://github.com/artiebits/pdf-to-printer)**
+npm package (`getPrinters()` / `print()`), which bundles its own copy of
+SumatraPDF *inside the npm package* and drives that directly — so
+`npm install` is the only setup step (no separate download, no `.env` path
+to configure), and it's no longer coupled to whichever PDF viewer a given
+machine happens to have registered (the Edge-vs-Acrobat surprise above is
+exactly the failure mode this removes). `print(pdf, { printer, copies,
+silent: true })` targets a named printer directly and its promise only
+resolves once the job's been handed off, so a clean resolve *is* the print
+confirmation — same property the manual-Sumatra version had, without the
+manual-install cost. This eliminates the whole default-printer-flip /
+restore / queue-poll / `unconfirmed`-reason mechanism the *original*
+approach needed — `PRINTER_NAME` is still resolved against the installed
+printers first (now via `getPrinters()` rather than raw `Win32_Printer`
+PowerShell) so a bad name fails loudly before `print()` is ever called, but
+there is no default printer to change or restore, and no queue to poll.
+`SendResult.unconfirmed` still exists on the type (macOS never sets it
+either) but nothing on the Windows path populates it now. `--printers`
+still lists the same printer names, now sourced through `pdf-to-printer`.
+Implemented and typechecked, but **still not run against a real Windows
+machine with a physical printer** — the owner doesn't have warehouse PC
+access. Treat the first live run as the real test: `npm install` (pulls in
+`pdf-to-printer`, nothing extra to download), `--dry-run` first, confirm
+`PRINTER_NAME` matches an installed printer, then a real one-copy print —
+watch for the label coming out with **no popup to click through** and no
+partial-success `unconfirmed` note.
 
 **The macOS/CUPS side of this same code IS now live-verified** (2026-08-18):
 `npm run print --dry-run` against two representative
@@ -269,14 +290,14 @@ The fixed-timer design (a flat sleep instead of polling the queue), the
 default-printer flip/restore, and the whole `Get-PrintJob` polling
 mechanism described in the paragraphs above are **history, not current
 code** — they belonged to the original `Start-Process -Verb Print`
-approach and were removed 2026-08-18 when that approach turned out to pop
-Edge's own print dialog on every run (see the SumatraPDF switch above).
-Kept here because the reasoning (why a fixed sleep is unsafe, why job
-identity mattered) may be useful if a future PDF-handler-based approach is
-ever considered again, but none of `HANDOFF_FALLBACK_MS`, the default-
-printer rough edges, or `Get-PrintJob` polling exist in `src/printer.ts`
-anymore — SumatraPDF's `-exit-when-done` exit code is now the only
-confirmation signal, and there's no default printer being changed, so
+approach and were removed 2026-08-18, first in favor of manual SumatraPDF
+(itself then replaced the same day by `pdf-to-printer` — see above). Kept
+here because the reasoning (why a fixed sleep is unsafe, why job identity
+mattered) may be useful if a future PDF-handler-based approach is ever
+considered again, but none of `HANDOFF_FALLBACK_MS`, the default-printer
+rough edges, `SUMATRA_PATH`, or `Get-PrintJob` polling exist in
+`src/printer.ts` anymore — `pdf-to-printer`'s `print()` promise is now the
+only confirmation signal, and there's no default printer being changed, so
 there's nothing left to restore or leave mis-set.
 
 Also fixed along the way, in `src/tasks/printLabels.ts` (not Windows-specific,
@@ -326,12 +347,13 @@ point above) genuine pushback that changed the design mid-PR rather than a
 rubber-stamp. PR #13 has been through several more rounds on top of that
 (7 commits as of `e261995`), including the two just described. See each
 PR's thread for the full list. That review history is against the
-`Start-Process -Verb Print` mechanism, since superseded by the SumatraPDF
-switch above (2026-08-18, not yet through its own PR review) — the queue-
+`Start-Process -Verb Print` mechanism, since superseded twice more on
+2026-08-18 — first by manual SumatraPDF, then by `pdf-to-printer` (not yet
+through its own PR review, and not yet even its own PR) — the queue-
 identity and `unconfirmed`-vs-exit-code lessons carried over conceptually
-(SumatraPDF's exit code plays the role the queue poll used to), but the
-new code itself hasn't been reviewed yet. The gate left is a real Windows
-run plus review of the SumatraPDF change.
+(`print()`'s resolved promise plays the role the queue poll used to), but
+the new code itself hasn't been reviewed yet. The gate left is a real
+Windows run plus review of the `pdf-to-printer` change.
 
 Still open: setup docs need `nvm-windows` notes — it ignores `.nvmrc`.
 

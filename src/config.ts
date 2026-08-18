@@ -25,13 +25,6 @@ export const config = {
   slowMo: int('SLOW_MO', 0),
   defaultFormat: (str('DEFAULT_LABEL_FORMAT', 'ItemLabel_Letter_30') || 'ItemLabel_Letter_30') as LabelFormat,
   printerName: str('PRINTER_NAME'),
-  /**
-   * Windows only. Path to the portable SumatraPDF executable used for
-   * silent printing (`-print-to -silent`, no dialog). Defaults to bare
-   * `SumatraPDF.exe`, resolved via PATH; set to a full path if it's not on
-   * PATH. Unused on macOS/Linux, which print via CUPS `lp` instead.
-   */
-  sumatraPath: str('SUMATRA_PATH', 'SumatraPDF.exe'),
   /** Every navigation/wait in the flow uses this unless it needs longer. */
   timeoutMs: int('TIMEOUT_MS', 45_000),
 } as const;
