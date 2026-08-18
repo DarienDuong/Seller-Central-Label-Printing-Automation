@@ -43,14 +43,13 @@ re-derived — and why the browser-session model stays until that service exists
 
 **Phases 1–3 are done and verified against a live account.** Phase 4 is
 "make it shareable" — Parts A and B are fully merged into `main`. B's
-macOS/CUPS path is now live-verified too; Windows is the only piece of 4B
-still unverified on real hardware.
+macOS/CUPS and Windows paths are now both live-verified — see §7.
 
 | Phase | Scope | State |
 | --- | --- | --- |
 | 1–3 | login, print by SKU, `--file` batches, `list` inventory | ✅ done, live-verified |
 | 4A | **shipment mode** (`--shipment`) | ✅ done, merged in PR #6 |
-| 4B | **Windows printing support** | 🟡 merged (PR #8 + follow-ups in PR #13). macOS/CUPS path live-verified 2026-08-18; **Windows still unverified on real hardware** |
+| 4B | **Windows printing support** | ✅ done, merged (PR #8 + follow-ups in PR #13); macOS/CUPS and Windows both live-verified — see §7 |
 | 4C | **MCP server** | ⬜ not started |
 | 4D | **teammate onboarding docs** | ⬜ not started |
 | 5 | **one sheet per SKU by default** (`--combine` opts back into today's behavior) | ✅ done, merged in PR #20 (2026-08-18), live-verified — see §7 |
@@ -258,26 +257,40 @@ can spool and clear the queue between polls, and a false failure invites a
 duplicate reprint of the batch). Falls back to a fixed 15s hold only if the
 queue can't be read at all. `--printers` lists `Win32_Printer` names on
 Windows. Implemented, typechecked, and merged (PR #8 + follow-ups in PR
-#13), but **still not run against a real Windows machine with a physical
-printer** — the owner doesn't have warehouse PC access. Treat the first
-live run as the real test: use `--dry-run` first, confirm `PRINTER_NAME`
-matches `Get-CimInstance Win32_Printer`, watch the job land in the Windows
-print queue, and check the logged `Queue check for copy N/M:
-matched|unmatched|none` line — a run that's consistently `unmatched` (not
-`matched`) means the DocumentName substring check isn't firing on that PDF
-handler (and the run is paying the full 60s/copy for it) and is worth a
-follow-up fix.
+#13).
 
-**The macOS/CUPS side of this same code IS now live-verified** (2026-08-18,
-on `main` @ `6803398`): `npm run print --dry-run` against two representative
-SKUs from the live account (quantities 2 and 22) produced correct 30-up
-PDFs, and a real (non-dry-run) print of one of them (qty 1) to a real CUPS
-printer (`Brother_DCP_L2550DW_series`) was confirmed to physically print
-correctly. This also verified, live rather than just by reading the diff:
-`--json` output is clean parseable JSON with no log noise mixed in
-(confirms the logger-to-stderr fix), and a confirmed print correctly
-reports `status: 'printed'` with no `message`/`unconfirmed`. Only Windows
-remains unverified.
+**Now live-verified on a real Windows machine** (owner report): the
+warehouse PC printed the remaining unprinted labels from the Aug 21
+shipment against `main`, and the physical labels came out correctly with
+no issues reported. That PC's registered PDF handler is **Acrobat**, not
+Edge — worth noting because the `DocumentName` substring-matching logic
+above was designed and reasoned about primarily against Edge's decorated
+`name.pdf - Profile 1 - Microsoft Edge` format (see above); Acrobat wasn't
+specifically exercised in that design discussion, so this run is also the
+first real signal that the matching logic (or its `unconfirmed` fallback
+path) works end-to-end with it too.
+
+What we don't yet know from this run, because it wasn't captured at the
+time: whether the console/`--json` output showed `Queue check for copy
+N/M: matched` (confirming the `DocumentName` heuristic actually fired on
+Acrobat's format) or `unmatched`/`none` (meaning it succeeded via the
+60-second-per-copy fallback path instead — still correct, just slow). If a
+future run on this PC feels close to 60s/copy rather than a few seconds,
+that's the tell that Acrobat isn't matching and the substring check is
+worth revisiting for Acrobat's specific `DocumentName` format. Not urgent —
+the run already succeeded either way — but worth checking next time someone's
+at that PC.
+
+**The macOS/CUPS side of this same code was live-verified earlier**
+(2026-08-18, on `main` @ `6803398`): `npm run print --dry-run` against two
+representative SKUs from the live account (quantities 2 and 22) produced
+correct 30-up PDFs, and a real (non-dry-run) print of one of them (qty 1)
+to a real CUPS printer (`Brother_DCP_L2550DW_series`) was confirmed to
+physically print correctly. This also verified, live rather than just by
+reading the diff: `--json` output is clean parseable JSON with no log
+noise mixed in (confirms the logger-to-stderr fix), and a confirmed print
+correctly reports `status: 'printed'` with no `message`/`unconfirmed`.
+Both platforms 4B targets are now confirmed working end to end.
 
 The fixed-timer design (a flat sleep instead of polling the queue) was
 tried and reverted after review — it raced the async PDF handler and could
@@ -341,8 +354,9 @@ findings confirmed and fixed outright, one (the `'downloaded'`-vs-exit-code
 point above) genuine pushback that changed the design mid-PR rather than a
 rubber-stamp. PR #13 has been through several more rounds on top of that
 (7 commits as of `e261995`), including the two just described. See each
-PR's thread for the full list. Nothing outstanding on the review side as of
-this commit; the only gate left is a real Windows run.
+PR's thread for the full list. Nothing outstanding on the review side, and
+the real Windows run that was the only remaining gate has now happened
+successfully (see above) — 4B is done.
 
 Still open: setup docs need `nvm-windows` notes — it ignores `.nvmrc`.
 
