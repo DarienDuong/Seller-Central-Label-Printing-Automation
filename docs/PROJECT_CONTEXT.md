@@ -1,12 +1,11 @@
 # Project context & status
 
 Handoff doc for starting a fresh Claude Code / Codex session on this repo without
-re-deriving everything. Last updated **2026-08-18** (main @ `d09ea1a`, which
+re-deriving everything. Last updated **2026-08-18** (main @ `6170d67`, which
 includes PR #8 / 4B and its follow-ups from PR #13, the verified-printer doc
-pass in PR #17, the Phase 5 planning + SP-API research doc pass in PR #18,
-and a cost cut to the Claude PR review workflow in PR #19 — all merged, see
-below; Phase 5's implementation is on branch `phase-5-per-sku-labels`, open
-as PR #20, not yet merged — see the status table and §7 below).
+pass in PR #17, the Phase 5 planning + SP-API research doc pass in PR #18, a
+cost cut to the Claude PR review workflow in PR #19, and Phase 5's
+implementation in PR #20 — all merged, see below).
 
 ---
 
@@ -54,34 +53,34 @@ still unverified on real hardware.
 | 4B | **Windows printing support** | 🟡 merged (PR #8 + follow-ups in PR #13). macOS/CUPS path live-verified 2026-08-18; **Windows still unverified on real hardware** |
 | 4C | **MCP server** | ⬜ not started |
 | 4D | **teammate onboarding docs** | ⬜ not started |
-| 5 | **one sheet per SKU by default** (`--combine` opts back into today's behavior) | 🟡 implemented + live-verified 2026-08-18; PR #20 open, not yet merged — see §7 |
+| 5 | **one sheet per SKU by default** (`--combine` opts back into today's behavior) | ✅ done, merged in PR #20 (2026-08-18), live-verified — see §7 |
 
 Sequencing 4B/4C/4D was the owner's call: shipment mode first (done), the rest
-after. Confirm with the owner before starting any of C/D.
+after. Confirm with the owner before starting any of C/D. **Phase 5 landed
+before 4C** per the owner's earlier call (below) — 4C is next up.
 
-**Phase 5 should land before 4C.** It adds a flag to the `print` surface, and
-4C's MCP tool schema wraps that surface — building the schema first means
-reworking it immediately after.
-
-`main` (`d09ea1a`) contains Phases 1–3, 4A, 4B (PR #8 and its follow-ups in
+`main` (`6170d67`) contains Phases 1–3, 4A, 4B (PR #8 and its follow-ups in
 PR #13, both squash-merged — their branch history isn't preserved on `main`,
 so don't try to rebase a leftover branch onto it expecting a fast-forward;
 cherry-pick instead), and the Claude Code GitHub Actions review workflow
 (PRs #9, #11, #12, #14, #15, #19 — automated PR review and its own upkeep,
 not a project phase), the context doc you're reading (PR #7), a doc-accuracy
-pass in PR #17, and the Phase 5 planning + SP-API research write-up in PR
-#18. PR #13 carried everything from #8's review that landed after #8 had
-already merged, plus several more rounds of review on #13 itself —
-job-identity matching in the print-queue poll (by `DocumentName` substring,
-not job id), surfacing unconfirmed print handoffs as structured data
-instead of plain-text prose or silent success, routing all log output to
-stderr so `--json` is actually pipeable, and this file's own accuracy
-(multiple times — it kept drifting behind the code each round).
+pass in PR #17, the Phase 5 planning + SP-API research write-up in PR #18,
+and Phase 5's implementation in PR #20. PR #13 carried everything from #8's
+review that landed after #8 had already merged, plus several more rounds of
+review on #13 itself — job-identity matching in the print-queue poll (by
+`DocumentName` substring, not job id), surfacing unconfirmed print handoffs
+as structured data instead of plain-text prose or silent success, routing
+all log output to stderr so `--json` is actually pipeable, and this file's
+own accuracy (multiple times — it kept drifting behind the code each
+round). PR #20 went through the same pattern: one round of review requested
+changes (an uncaught-exception regression in the new default fetch path,
+plus three advisory nits — cross-group request pacing, a duplicated
+thermal-size default, and this file's own stale PR references), all fixed,
+then approved and merged.
 PR #4 ("Added my print label script in project sub-directory") — the
 stale/superseded PR from before the rewrite — is now **closed**
-(2026-08-17). Nothing further to do with it. Phase 5's implementation is on
-branch `phase-5-per-sku-labels`, open as **PR #20**, not yet merged — see
-the status table above and §7 below.
+(2026-08-17). Nothing further to do with it.
 
 ---
 
@@ -355,13 +354,12 @@ GPT Actions is a separate non-MCP protocol — out of scope unless asked.
 **4D — onboarding docs.** repo access → install → `.env` → their own
 `npm run login` → MCP registration, with per-OS notes.
 
-**Phase 5 — one sheet per SKU by default.** Planned and implemented
-2026-08-18, on branch `phase-5-per-sku-labels`, open as PR #20 (not yet
-merged). The
-investigation below (Amazon has no native option, the private endpoint,
-what SP-API would/wouldn't buy) was done before writing any code and still
-describes the current implementation; the verification results at the end
-are what actually ran against the live account.
+**Phase 5 — one sheet per SKU by default.** Planned, implemented, and merged
+2026-08-18 (PR #20, from branch `phase-5-per-sku-labels`). The investigation
+below (Amazon has no native option, the private endpoint, what SP-API
+would/wouldn't buy) was done before writing any code and still describes
+the current implementation; the verification results at the end are what
+actually ran against the live account.
 
 *The problem.* Today a run puts every SKU that shares a format onto one
 print-labels page load, and Amazon packs the resulting labels **contiguously**
