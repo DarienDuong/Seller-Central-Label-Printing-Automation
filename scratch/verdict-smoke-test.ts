@@ -5,15 +5,13 @@
 // typecheck workflow. Delete this file (and close/don't merge this PR)
 // once both have been observed working end to end.
 //
-// Deliberately contains a real, blocking bug: `total` is computed from
-// `prices`, but the loop bound is `prices.length` while it indexes into
-// `discounts`, which is one element shorter — an out-of-bounds read that
-// is `undefined` at runtime (TS can't catch this statically because the
-// two arrays aren't tied together by type).
+// Fixed: bound the loop by the shorter array, so a SKU past the end of
+// `discounts` is treated as having no discount instead of being read
+// out of bounds.
 export function totalWithDiscounts(prices: number[], discounts: number[]): number {
   let total = 0;
   for (let i = 0; i < prices.length; i++) {
-    total += prices[i]! - discounts[i]!;
+    total += prices[i]! - (discounts[i] ?? 0);
   }
   return total;
 }
