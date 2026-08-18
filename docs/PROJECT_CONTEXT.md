@@ -1,8 +1,9 @@
 # Project context & status
 
 Handoff doc for starting a fresh Claude Code / Codex session on this repo without
-re-deriving everything. Last updated **2026-08-18** (main @ `6803398`, which
-includes PR #8 / 4B and its follow-ups from PR #13 — both merged, see below).
+re-deriving everything. Last updated **2026-08-18** (main @ `7e5340b`, which
+includes PR #8 / 4B and its follow-ups from PR #13, plus the verified-printer
+doc pass in PR #17 — all merged, see below).
 
 ---
 
@@ -21,6 +22,13 @@ macOS *and* Windows, with each teammate using **their own** Seller Central login
 building an MCP server and doing browser automation. Prefer solutions that
 exercise those, over shortcuts that skip them (e.g. don't replace scraping with
 the SP-API just because it'd be easier).
+
+**Where this is headed eventually** (not current scope — see §9): a private
+service holding SP-API credentials that employees authenticate *to*, and an MCP
+server over Seller Central covering many actions rather than just labels. Today
+the point is hands-on exposure to building an MCP server, with browser
+automation as the mechanism. §9 records the SP-API research so it doesn't get
+re-derived — and why the browser-session model stays until that service exists.
 
 - Repo: `DarienDuong/Seller-Central-Label-Printing-Automation`
 - Local path: `/Users/d0d0288/Desktop/Label Printing Browser Automation`
@@ -43,16 +51,22 @@ still unverified on real hardware.
 | 4B | **Windows printing support** | 🟡 merged (PR #8 + follow-ups in PR #13). macOS/CUPS path live-verified 2026-08-18; **Windows still unverified on real hardware** |
 | 4C | **MCP server** | ⬜ not started |
 | 4D | **teammate onboarding docs** | ⬜ not started |
+| 5 | **one sheet per SKU by default** (`--combine` opts back into today's behavior) | ⬜ planned, not started — live exploration done, see §7 |
 
 Sequencing 4B/4C/4D was the owner's call: shipment mode first (done), the rest
 after. Confirm with the owner before starting any of C/D.
 
-`main` (`6803398`) contains Phases 1–3, 4A, 4B (PR #8 and its follow-ups in
+**Phase 5 should land before 4C.** It adds a flag to the `print` surface, and
+4C's MCP tool schema wraps that surface — building the schema first means
+reworking it immediately after.
+
+`main` (`7e5340b`) contains Phases 1–3, 4A, 4B (PR #8 and its follow-ups in
 PR #13, both squash-merged — their branch history isn't preserved on `main`,
 so don't try to rebase a leftover branch onto it expecting a fast-forward;
 cherry-pick instead), and the Claude Code GitHub Actions review workflow
 (PRs #9, #11, #12, #14, #15 — automated PR review and its own upkeep, not a
-project phase). PR #13 carried everything from #8's review that landed
+project phase), the context doc you're reading (PR #7), and a doc-accuracy
+pass in PR #17. PR #13 carried everything from #8's review that landed
 after #8 had already merged, plus several more rounds of review on #13
 itself — job-identity matching in the print-queue poll (by `DocumentName`
 substring, not job id), surfacing unconfirmed print handoffs as structured
@@ -120,6 +134,19 @@ These cost real debugging time. Don't rediscover them.
 - "Standard formats" = fixed Paper/Sticker dropdown (30/27/24/21/40/44-up).
   "Thermal printing" swaps that for freeform Width/Height mm fields (Amazon's
   own default 57×32mm). There is no fixed thermal preset.
+- **The Manage Inventory route to printing is redundant, not useful** (checked
+  live 2026-08-18, because it's a reasonable idea that deserves a real answer).
+  Searching the grid by SKU does work cleanly — it returns `1 - 1 of 1`. But
+  the per-row `⋮` menu has **no** print option at all; "Print item labels"
+  lives in the *group action* menu (tick the row's checkbox first), and
+  clicking it opens
+  `/fba/printitemlabel/?mSku.0=<sku>&ref_=myp_printitemlabels` — the exact URL
+  this codebase already builds, plus a tracking ref. So the grid route is ~6 UI
+  steps to reach a URL we construct in one line from the SKU, and it lands on
+  the same page, so it yields the same packed PDF and doesn't help with
+  per-SKU sheet breaks either. It also puts an automated click in a menu where
+  "Delete listing" and "Close listing" sit four rows above the target — avoid,
+  on the read-only grounds in §6.
 - Manage Inventory rows have **no fixed text column layout** — out-of-stock rows
   carry an extra "Replenish inventory" line that shifts everything after it.
   `listVisible()` indexes by adjacent label line, not position.
@@ -159,7 +186,10 @@ These cost real debugging time. Don't rediscover them.
 ### Dead ends — already tried, don't repeat
 - **Guessing internal JSON endpoints.** Every guessed path returned HTTP 200 —
   but `content-type: text/html`, i.e. the SPA shell. Always check content-type
-  before believing a 200.
+  before believing a 200. **What does work is observing real traffic**: patch
+  `window.fetch` in the live page, click the control, read the captured URL and
+  body. That's how `POST /fba/printitemlabel/ping/getPdfContent` (raw PDF bytes
+  out, `msku`+`quantity` in) was found — see the Phase 5 write-up in §7.
 - **Scanning JS bundles for endpoints** returned 0 hits, which was a **false
   negative** caused by CORS ("Failed to fetch"), not an actual absence.
 - **The new React Shipments list** (`/amazonsell/shipments`) frequently hangs
@@ -317,6 +347,87 @@ GPT Actions is a separate non-MCP protocol — out of scope unless asked.
 **4D — onboarding docs.** repo access → install → `.env` → their own
 `npm run login` → MCP registration, with per-OS notes.
 
+**Phase 5 — one sheet per SKU by default.** Planned 2026-08-18, not started.
+
+*The problem.* Today a run puts every SKU that shares a format onto one
+print-labels page load, and Amazon packs the resulting labels **contiguously**
+— a SKU's labels start wherever the previous SKU's ended, mid-sheet. Confirmed
+arithmetically by the verified 12-SKU shipment: 2433 units came back as 82
+pages, and `ceil(2433 / 30) = 82` exactly, which is only possible with no
+per-SKU sheet breaks. Physically that means a stack of sheets that can't be
+split by SKU without reading barcodes, which is the actual complaint.
+
+*Amazon has no native option for this — established, not assumed* (explored
+2026-08-18 via the Chrome connector against the live account):
+
+- Every form control on `/fba/printitemlabel/`, shadow roots included, is: one
+  quantity input per SKU, the two format dropdowns, and the submit button.
+  There is no checkbox, toggle, or hidden field for sheet breaks.
+- The "Print Item Labels" button does **not** post a form. It calls
+  `POST /fba/printitemlabel/ping/getPdfContent` with
+  `{itemLabelDataList:[{fnsku,msku,quantity}…], labelType, pageType, width,
+  height}` and gets **raw PDF bytes** back (`%PDF-`, 200). This was captured
+  from the page's own traffic by patching `window.fetch` — it is *not* a
+  guessed endpoint (see the endpoint-guessing dead end in §5; observing real
+  traffic is the technique that works, guessing is the one that doesn't).
+- `labelType` is a real enum, and all three values were tested by page count:
+  `MULTIPLE` = standard N-up, packing contiguously across SKUs (A+B at qty 1
+  each → **1 page**; A at 30 + B at 1 → 2 pages, i.e. B spills onto sheet 2);
+  `SINGLE` = one label **per page** (A at qty 3 → 3 pages — a tempting name,
+  but it would turn a 2433-unit shipment into 2433 sheets, not 12);
+  `SINGLE_MULTILINE` = thermal (captured from the UI's own thermal mode).
+  Invalid values 500.
+- Speculative page-break params (`newPagePerSku`, `separatePages`,
+  `pageBreakPerSku`, `onePagePerSku`, per-item `startNewPage`) all returned
+  **byte-identical** PDFs — silently ignored, not honored.
+
+So sheet separation has to be done client-side. **Merging per-SKU PDFs is the
+only route.**
+
+*The change.* Default becomes: fetch one PDF per SKU, then **concatenate them
+into a single PDF** — each source PDF already ends on a sheet boundary, so
+concatenation gives per-SKU sheet breaks for free, in **one file and one
+printer job**. `--combine` opts back into today's packed behavior (fewer
+sheets, no per-SKU breaks). `groupByFormat()` in `src/tasks/printLabels.ts` is
+where this is decided. Flag only, deliberately no `.env` default — a
+per-machine setting that silently changes how paper comes out is a support
+burden. `--shipment` inherits the new default, which is the case that matters
+most.
+
+*Get the PDFs from the API, not from N page loads.* Calling `getPdfContent`
+directly averaged **263 ms**, so a 12-SKU shipment costs ~3 s of requests
+rather than the ~3–5 minutes that 12 full page loads would take. Two findings
+make this simpler than expected: **`fnsku` is ignored** — omitted, empty, and
+deliberately wrong values all produced identical bytes, so the server resolves
+the barcode from `msku` and we never need to scrape FNSKUs; and an unknown
+`msku` returns **500** rather than being silently dropped, which is strictly
+better than the DOM path's silent-drop behavior that `renderedSkus()` exists
+to detect. `pageType` values are already exactly our `LabelFormat` strings.
+
+*The private endpoint is the approved route* (owner decision, 2026-08-18). It
+is undocumented and can change without notice, but three things make it a
+reasonable dependency: the call runs inside the authenticated browser session
+via `page.evaluate`, so it stays session-driven rather than becoming an SP-API
+integration; the DOM path (one page load per SKU at
+`/fba/printitemlabel/?mSku.0=<sku>`) remains as a fallback that produces
+byte-identical PDFs, just slower; and it has a documented, supported twin in
+SP-API — `createMarketplaceItemLabels` takes the same inputs under different
+names (see §9), so this is the internal version of a real API, not a hack
+around a missing one. If Amazon changes it, the fallback and the migration
+target are both already known.
+
+*Implementation notes.* Merging needs a PDF library — `pdf-lib` is pure JS
+with no native deps, which matters because 4B's Windows support is still
+unverified and a native build step would make that worse. Response bytes must
+be read as `arrayBuffer` (base64 across the `page.evaluate` boundary), **not**
+`text()`, which mangles binary. Keep the pace deliberate between requests per
+the Amazon-terms constraint in §6.
+
+*Verification.* Per §8, against the artifact, not the absence of errors: one
+PDF per SKU, each `ceil(qty / 30)` pages, and — the actual claim — the first
+label of each PDF sitting at sheet position 1. Total label count must be
+unchanged, and `--combine` must reproduce the 82-page baseline exactly.
+
 **Unresolved bug report.** The owner once reported
 `Target page, context or browser has been closed` with `shipmentToRequests` in
 the stack trace. That function no longer exists — the trace was stale
@@ -347,3 +458,99 @@ Chromium window being closed or interfered with during the ~60s wait
   follow-up once a reviewer points it out.
 - Verification means checking the **actual artifact** (open the PDF, count the
   pages, count distinct FNSKUs), not "no error thrown".
+
+---
+
+## 9. Long-term direction — SP-API (explicitly NOT current scope)
+
+Researched 2026-08-18. Recorded because it keeps coming up and the reasoning is
+easy to re-litigate from scratch. **Nothing here is being built now.**
+
+### Where the project is actually headed
+
+The owner's stated long-term goal is a **private service that holds the SP-API
+credentials**, which employees authenticate *to*, plus an **MCP server over
+Seller Central** that can call a range of actions and endpoints rather than
+just printing labels. That is a substantially larger project than this repo.
+
+The current scope is deliberately smaller: **gaining hands-on exposure to
+building an MCP server**, with browser automation as the mechanism. Don't
+"helpfully" start the SP-API migration — the browser-automation constraint in
+§1 is a learning goal, not an accident of history.
+
+### SP-API does have an item-label endpoint
+
+`POST /inbound/fba/2024-03-20/items/labels` — `createMarketplaceItemLabels`,
+in the Fulfillment Inbound 2024-03-20 API: *"For a given marketplace - creates
+labels for a list of MSKUs."* It is a near-exact mirror of the private endpoint
+Phase 5 uses:
+
+| Private `getPdfContent` | SP-API `createMarketplaceItemLabels` |
+| --- | --- |
+| `itemLabelDataList: [{msku, quantity}]` | `mskuQuantities: [{msku, quantity}]` |
+| `labelType: MULTIPLE` / `SINGLE_MULTILINE` | `labelType: STANDARD_FORMAT` / `THERMAL_PRINTING` |
+| `pageType: ItemLabel_Letter_30` | `pageType: Letter_30` |
+| `width` / `height` | `width` / `height` (25–100) |
+
+`pageType` accepts `Letter_30`, `A4_27`, `A4_24`, `A4_21`, `A4_40_52x29`,
+`A4_44_48x25` — exactly our `LabelFormat` enum minus the prefix — plus five
+extra A4 variants Seller Central's own dropdown doesn't offer. It returns
+`documentDownloads[]` (presigned URI + expiration) rather than PDF bytes
+inline. Capped at 100 MSKUs per call, 2 rps / burst 30.
+
+**It does not solve Phase 5.** The request schema is complete — `height`,
+`labelType`, `localeCode`, `marketplaceId`, `mskuQuantities`, `pageType`,
+`width` — with no page-break or per-SKU-separation parameter. Same inputs as
+the private call, so the same contiguous packing. Merging PDFs client-side is
+required under either route.
+
+What SP-API *would* genuinely buy: `listShipmentItems` / `listInboundPlanItems`
+would replace shipment-page scraping outright — the tab trap, the `total-items`
+lie, the absent pagination controls, and the 60-second page loads in §5 all
+become a paginated JSON call.
+
+### The blocker: SP-API has no per-employee credentials
+
+This is the decisive finding, and it's why the browser-session model stays.
+
+- LWA **client id + secret** belong to the *application* — one set.
+- The **refresh token** is issued per *selling account*, not per user.
+- **"To self-authorize a Seller Central account, you must be the Primary
+  User of that account."** Employees are secondary users; they cannot
+  authorize an app, and no mechanism exists for them to hold their own
+  credential.
+
+So employees could only run SP-API calls by holding *the owner's* credentials.
+Compared with what the current design already provides, that is a downgrade in
+exactly the dimension that matters:
+
+| | Today (browser sessions) | SP-API with shared credentials |
+| --- | --- | --- |
+| Identity | Each employee signs in as themselves | Everyone is "the app," acting as the account |
+| Amazon's audit trail | Attributes actions to that person | One identity for all |
+| Revoking one person | Seller Central → User Permissions; others unaffected | Rotate the token, redistribute to everyone |
+| Scope limits | Their assigned Seller Central role | Whatever roles the app was approved for |
+| If a credential leaks | Session expires on its own | Refresh token is long-lived and account-wide |
+
+That last row is the sharp one: a stolen `.auth/seller-central.json` is
+self-limiting, a leaked refresh token is not. Distributing SP-API credentials
+would also mean putting a `client_secret` Amazon expects to stay confidential
+onto machines the owner doesn't control.
+
+**The hosted-service design is the resolution, not a workaround** — it's the
+standard answer to this exact constraint (don't distribute credentials;
+distribute access to a service that holds them), and it happens to be where
+the owner already wants to go. Until that service exists, employees keep
+browser sessions.
+
+### If someone picks this up later
+
+Load-bearing facts, so they don't get re-derived: the item-label endpoint
+exists and mirrors the private one; it does *not* do sheet separation; the
+auth model has no per-user credential and requires the Primary User to
+authorize; SP-API's real win here is shipment reading, not label generation.
+
+Sources: [Fulfillment Inbound 2024-03-20 API model](https://github.com/amzn/selling-partner-api-models/blob/main/models/fulfillment-inbound-api-model/fulfillmentInbound_2024-03-20.json)
+(operation list and schemas above were read directly from it),
+[Authorize Private Applications](https://developer-docs.amazon.com/sp-api/docs/self-authorization),
+[Usage plans and rate limits](https://developer-docs.amazon.com/sp-api/docs/usage-plans-and-rate-limits-in-the-sp-api).
