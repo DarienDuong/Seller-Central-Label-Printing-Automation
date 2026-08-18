@@ -209,10 +209,13 @@ call, and restores it afterward. Two cases where it doesn't get restored:
   `PRINTER_NAME` is left as the default and the run logs a warning saying
   so.
 
-It hasn't yet been verified against a real Windows box + physical printer —
-the code paths were written and typechecked but not run live; treat the
-first real run as the actual test and watch it happen (`--dry-run` first,
-or watch the print job appear in the print queue).
+This Windows-specific path hasn't yet been verified against a real Windows
+box + physical printer — the code paths were written and typechecked but
+not run live; treat the first real run as the actual test and watch it
+happen (`--dry-run` first, or watch the print job appear in the print
+queue). The macOS/CUPS path this Windows code sits alongside *has* been
+live-verified — real Seller Central data, a real dry-run PDF, and a real
+print to a physical CUPS printer, confirmed correct.
 
 ### Setting `PRINTER_NAME` on Windows
 

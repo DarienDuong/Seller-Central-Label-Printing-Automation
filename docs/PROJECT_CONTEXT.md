@@ -1,9 +1,8 @@
 # Project context & status
 
 Handoff doc for starting a fresh Claude Code / Codex session on this repo without
-re-deriving everything. Last updated **2026-08-16** (main @ `184c215`, which
-includes PR #8 / 4B; **open PR #13**, branch `fix/windows-printing-followups`,
-has follow-up fixes on top — see below).
+re-deriving everything. Last updated **2026-08-18** (main @ `6803398`, which
+includes PR #8 / 4B and its follow-ups from PR #13 — both merged, see below).
 
 ---
 
@@ -33,34 +32,33 @@ the SP-API just because it'd be easier).
 ## 2. Current status
 
 **Phases 1–3 are done and verified against a live account.** Phase 4 is
-"make it shareable" — Parts A and B are merged into `main`; B has follow-up
-fixes on an open PR, still gated on a real Windows run.
+"make it shareable" — Parts A and B are fully merged into `main`. B's
+macOS/CUPS path is now live-verified too; Windows is the only piece of 4B
+still unverified on real hardware.
 
 | Phase | Scope | State |
 | --- | --- | --- |
 | 1–3 | login, print by SKU, `--file` batches, `list` inventory | ✅ done, live-verified |
 | 4A | **shipment mode** (`--shipment`) | ✅ done, merged in PR #6 |
-| 4B | **Windows printing support** | 🟡 merged (PR #8), **open follow-up PR #13**, still unverified on a real Windows box/printer |
+| 4B | **Windows printing support** | 🟡 merged (PR #8 + follow-ups in PR #13). macOS/CUPS path live-verified 2026-08-18; **Windows still unverified on real hardware** |
 | 4C | **MCP server** | ⬜ not started |
 | 4D | **teammate onboarding docs** | ⬜ not started |
 
 Sequencing 4B/4C/4D was the owner's call: shipment mode first (done), the rest
 after. Confirm with the owner before starting any of C/D.
 
-`main` (`184c215`) contains Phases 1–3, 4A, 4B (PR #8, squash-merged — its
-branch history isn't preserved on `main`, so don't try to rebase onto it
-expecting a fast-forward; cherry-pick instead), and the Claude Code GitHub
-Actions review workflow (PRs #9, #11, #12, #14 — automated PR review and its
-own upkeep, not a project phase). **`fix/windows-printing-followups` (PR
-#13, open)** carries everything from #8's review that landed after #8 had
-already merged, plus several more rounds of review on #13 itself —
-job-identity matching in the print-queue poll (by `DocumentName`
+`main` (`6803398`) contains Phases 1–3, 4A, 4B (PR #8 and its follow-ups in
+PR #13, both squash-merged — their branch history isn't preserved on `main`,
+so don't try to rebase a leftover branch onto it expecting a fast-forward;
+cherry-pick instead), and the Claude Code GitHub Actions review workflow
+(PRs #9, #11, #12, #14, #15 — automated PR review and its own upkeep, not a
+project phase). PR #13 carried everything from #8's review that landed
+after #8 had already merged, plus several more rounds of review on #13
+itself — job-identity matching in the print-queue poll (by `DocumentName`
 substring, not job id), surfacing unconfirmed print handoffs as structured
 data instead of plain-text prose or silent success, routing all log output
 to stderr so `--json` is actually pipeable, and this file's own accuracy
-(multiple times — it kept drifting behind the code each round). Start a
-fresh session from `main` only if 4B isn't the task; otherwise check
-out/continue that branch.
+(multiple times — it kept drifting behind the code each round).
 PR #4 ("Added my print label script in project sub-directory") is still **open**
 and is a stale/superseded PR from before the rewrite — check with the owner
 before touching it.
@@ -220,16 +218,27 @@ flagged `unconfirmed` with a reason (not a hard failure — a one-page label
 can spool and clear the queue between polls, and a false failure invites a
 duplicate reprint of the batch). Falls back to a fixed 15s hold only if the
 queue can't be read at all. `--printers` lists `Win32_Printer` names on
-Windows. Implemented and typechecked, merged in PR #8 with follow-ups in PR
-#13, but **not yet run against a real Windows machine with a physical
-printer** — the owner doesn't have warehouse PC access this session. Treat
-the first live run as the real test: use `--dry-run` first, confirm
-`PRINTER_NAME` matches `Get-CimInstance Win32_Printer`, watch the job land
-in the Windows print queue, and check the logged `Queue check for copy
-N/M: matched|unmatched|none` line — a run that's consistently `unmatched`
-(not `matched`) means the DocumentName substring check isn't firing on
-that PDF handler (and the run is paying the full 60s/copy for it) and is
-worth a follow-up fix.
+Windows. Implemented, typechecked, and merged (PR #8 + follow-ups in PR
+#13), but **still not run against a real Windows machine with a physical
+printer** — the owner doesn't have warehouse PC access. Treat the first
+live run as the real test: use `--dry-run` first, confirm `PRINTER_NAME`
+matches `Get-CimInstance Win32_Printer`, watch the job land in the Windows
+print queue, and check the logged `Queue check for copy N/M:
+matched|unmatched|none` line — a run that's consistently `unmatched` (not
+`matched`) means the DocumentName substring check isn't firing on that PDF
+handler (and the run is paying the full 60s/copy for it) and is worth a
+follow-up fix.
+
+**The macOS/CUPS side of this same code IS now live-verified** (2026-08-18,
+on `main` @ `6803398`): `npm run print --dry-run` against real Seller
+Central inventory (SKUs K1-ZMUR-OZKB qty 2, YJ-B42Y-0VY3 qty 22) produced
+correct 30-up PDFs, and a real (non-dry-run) print of K1-ZMUR-OZKB qty 1 to
+a real CUPS printer (`Brother_DCP_L2550DW_series`) was confirmed to
+physically print correctly. This also verified, live rather than just by
+reading the diff: `--json` output is clean parseable JSON with no log
+noise mixed in (confirms the logger-to-stderr fix), and a confirmed print
+correctly reports `status: 'printed'` with no `message`/`unconfirmed`. Only
+Windows remains unverified.
 
 The fixed-timer design (a flat sleep instead of polling the queue) was
 tried and reverted after review — it raced the async PDF handler and could
