@@ -1,11 +1,12 @@
 # Project context & status
 
 Handoff doc for starting a fresh Claude Code / Codex session on this repo without
-re-deriving everything. Last updated **2026-08-18** (main @ `7e5340b`, which
-includes PR #8 / 4B and its follow-ups from PR #13, plus the verified-printer
-doc pass in PR #17 — all merged, see below; Phase 5 is implemented and
-live-verified on branch `phase-5-per-sku-labels`, open as PR #20, not yet
-merged — see the status table and §7 below).
+re-deriving everything. Last updated **2026-08-18** (main @ `d09ea1a`, which
+includes PR #8 / 4B and its follow-ups from PR #13, the verified-printer doc
+pass in PR #17, the Phase 5 planning + SP-API research doc pass in PR #18,
+and a cost cut to the Claude PR review workflow in PR #19 — all merged, see
+below; Phase 5's implementation is on branch `phase-5-per-sku-labels`, open
+as PR #20, not yet merged — see the status table and §7 below).
 
 ---
 
@@ -441,7 +442,9 @@ unverified and a native build step would make that worse. Response bytes must
 be read as `arrayBuffer` (base64 across the `page.evaluate` boundary), **not**
 `text()`, which mangles binary. Keep the pace deliberate between requests per
 the Amazon-terms constraint in §6 — `printLabels.ts` sleeps 400ms between
-per-SKU fetches within a group.
+every per-SKU fetch across the whole run, not just within one format group
+(an earlier version reset the pacing at each group boundary, so the last
+SKU of one group and the first of the next fetched back-to-back).
 
 One more finding, only visible once actually calling the endpoint from code
 rather than the browser's network panel: the response's `content-type` is

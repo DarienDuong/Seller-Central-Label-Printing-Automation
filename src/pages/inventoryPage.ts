@@ -3,6 +3,14 @@ import { gotoAuthed } from '../auth.js';
 import type { InventoryItem, LabelFormat } from '../types.js';
 
 /**
+ * Seller Central's own default thermal size when Width/Height (mm) are left
+ * blank. Shared by setFormat() (--combine path), fetchLabelPdf() (default
+ * path), and groupByFormat()'s grouping key in printLabels.ts, so the three
+ * can't silently diverge on what "default thermal size" means.
+ */
+export const DEFAULT_THERMAL_MM = { width: 57, height: 32 } as const;
+
+/**
  * Page object for Manage Inventory and the Print Item Labels flow.
  *
  * Verified 2026-08-12 against a live account. Seller Central's inventory grid
@@ -128,8 +136,8 @@ export class InventoryPage {
     await this.chooseDropdownOption('Choose printing format', isThermal ? 'Thermal printing' : 'Standard formats');
 
     if (isThermal) {
-      const widthMm = thermal?.widthMm ?? 57;
-      const heightMm = thermal?.heightMm ?? 32;
+      const widthMm = thermal?.widthMm ?? DEFAULT_THERMAL_MM.width;
+      const heightMm = thermal?.heightMm ?? DEFAULT_THERMAL_MM.height;
       await this.page.locator('kat-input[label="Width (mm)"] input').fill(String(widthMm));
       await this.page.locator('kat-input[label="Height (mm)"] input').fill(String(heightMm));
     } else {
@@ -168,7 +176,9 @@ export class InventoryPage {
       itemLabelDataList: [{ msku, quantity }],
       labelType: isThermal ? 'SINGLE_MULTILINE' : 'MULTIPLE',
       ...(isThermal ? {} : { pageType: format }),
-      ...(isThermal ? { width: thermal?.widthMm ?? 57, height: thermal?.heightMm ?? 32 } : {}),
+      ...(isThermal
+        ? { width: thermal?.widthMm ?? DEFAULT_THERMAL_MM.width, height: thermal?.heightMm ?? DEFAULT_THERMAL_MM.height }
+        : {}),
     };
 
     const base64 = await this.page.evaluate(async (body) => {

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { PDFDocument } from 'pdf-lib';
 import { config } from '../config.js';
 import { launchSession, type Session } from '../browser.js';
-import { InventoryPage } from '../pages/inventoryPage.js';
+import { InventoryPage, DEFAULT_THERMAL_MM } from '../pages/inventoryPage.js';
 import { sendToPrinter } from '../printer.js';
 import { log } from '../logger.js';
 import type { LabelFormat, LabelRequest, LabelResult } from '../types.js';
@@ -85,7 +85,28 @@ export async function printLabels(
     // SKU rather than an empty list: an empty mSku query string never
     // renders the page chrome (kat-button) at all, so openPrintLabelsPage's
     // wait for it times out.
-    if (!options.combine) await inventory.openPrintLabelsPage([requests[0]!.sku]);
+    //
+    // This sits in its own try/catch, not inside the per-group loop below,
+    // because it happens before any group is processed — a bare throw here
+    // would otherwise escape printLabels() entirely (an uncaught exception,
+    // zero LabelResults, and a broken `--json` mode) instead of degrading
+    // the same way every other failure in this function does: a transient
+    // timeout or DOM variant becomes a 'failed' result per request, and the
+    // caller still gets a result for every SKU it asked about.
+    if (!options.combine) {
+      try {
+        await inventory.openPrintLabelsPage([requests[0]!.sku]);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log.error(`Failed to open the Print Item Labels page: ${message}`);
+        return requests.map((req) => ({ sku: req.sku, status: 'failed', message }));
+      }
+    }
+
+    // Pacing is tracked across the whole run, not reset per format group —
+    // otherwise the last SKU of one group and the first of the next fetch
+    // back-to-back with no gap, only pausing *within* a group.
+    let fetchedAny = false;
 
     for (const group of groupByFormat(requests)) {
       const skus = group.map((r) => r.sku);
@@ -129,8 +150,9 @@ export async function printLabels(
         } else {
           const buffers: Buffer[] = [];
           found = [];
-          for (const [i, req] of group.entries()) {
-            if (i > 0) await sleep(REQUEST_PACING_MS);
+          for (const req of group) {
+            if (fetchedAny) await sleep(REQUEST_PACING_MS);
+            fetchedAny = true;
             try {
               buffers.push(await inventory.fetchLabelPdf(req.sku, req.quantity, format, thermal));
               found.push(req);
@@ -197,7 +219,10 @@ function groupByFormat(requests: LabelRequest[]): LabelRequest[][] {
   const groups = new Map<string, LabelRequest[]>();
   for (const req of requests) {
     const format: LabelFormat = req.format ?? config.defaultFormat;
-    const key = format === 'thermal' ? `thermal:${req.thermalWidthMm ?? 57}x${req.thermalHeightMm ?? 32}` : format;
+    const key =
+      format === 'thermal'
+        ? `thermal:${req.thermalWidthMm ?? DEFAULT_THERMAL_MM.width}x${req.thermalHeightMm ?? DEFAULT_THERMAL_MM.height}`
+        : format;
     const group = groups.get(key);
     if (group) group.push(req);
     else groups.set(key, [req]);
