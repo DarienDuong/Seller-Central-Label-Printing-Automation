@@ -1,8 +1,9 @@
 # Project context & status
 
 Handoff doc for starting a fresh Claude Code / Codex session on this repo without
-re-deriving everything. Last updated **2026-08-15** (main @ `5b19906`; open PR #8
-has six commits on top, see below).
+re-deriving everything. Last updated **2026-08-16** (main @ `184c215`, which
+includes PR #8 / 4B; **open PR #13**, branch `fix/windows-printing-followups`,
+has follow-up fixes on top — see below).
 
 ---
 
@@ -32,26 +33,34 @@ the SP-API just because it'd be easier).
 ## 2. Current status
 
 **Phases 1–3 are done and verified against a live account.** Phase 4 is
-"make it shareable" — Part A is merged, Part B is implemented and awaiting
-live verification + review on an open PR.
+"make it shareable" — Parts A and B are merged into `main`; B has follow-up
+fixes on an open PR, still gated on a real Windows run.
 
 | Phase | Scope | State |
 | --- | --- | --- |
 | 1–3 | login, print by SKU, `--file` batches, `list` inventory | ✅ done, live-verified |
 | 4A | **shipment mode** (`--shipment`) | ✅ done, merged in PR #6 |
-| 4B | **Windows printing support** | 🟡 implemented + typechecked, **open PR #8**, unverified on a real Windows box/printer |
+| 4B | **Windows printing support** | 🟡 merged (PR #8), **open follow-up PR #13**, still unverified on a real Windows box/printer |
 | 4C | **MCP server** | ⬜ not started |
 | 4D | **teammate onboarding docs** | ⬜ not started |
 
 Sequencing 4B/4C/4D was the owner's call: shipment mode first (done), the rest
 after. Confirm with the owner before starting any of C/D.
 
-`main` (`5b19906`) contains Phases 1–3, 4A, and the Claude Code GitHub Actions
-review workflow (PRs #9, #11, #12 — automated PR review, not a project phase).
-**`feat/windows-printing` (PR #8, open) has 4B on top of it** — not yet merged,
-not yet run against a real Windows machine, currently up to date with `main`
-(no rebase needed). Start a fresh session from `main` only if 4B isn't the
-task; otherwise check out/continue that branch.
+`main` (`184c215`) contains Phases 1–3, 4A, 4B (PR #8, squash-merged — its
+branch history isn't preserved on `main`, so don't try to rebase onto it
+expecting a fast-forward; cherry-pick instead), and the Claude Code GitHub
+Actions review workflow (PRs #9, #11, #12, #14 — automated PR review and its
+own upkeep, not a project phase). **`fix/windows-printing-followups` (PR
+#13, open)** carries everything from #8's review that landed after #8 had
+already merged, plus several more rounds of review on #13 itself —
+job-identity matching in the print-queue poll (by `DocumentName`
+substring, not job id), surfacing unconfirmed print handoffs as structured
+data instead of plain-text prose or silent success, routing all log output
+to stderr so `--json` is actually pipeable, and this file's own accuracy
+(multiple times — it kept drifting behind the code each round). Start a
+fresh session from `main` only if 4B isn't the task; otherwise check
+out/continue that branch.
 PR #4 ("Added my print label script in project sub-directory") is still **open**
 and is a stale/superseded PR from before the rewrite — check with the owner
 before touching it.
@@ -88,11 +97,12 @@ Common flags: `--dry-run` (download PDF, never print), `--headed`, `--json`,
 | `src/pages/shipmentPage.ts` | Send to Amazon content step — scrapes a shipment's SKUs/units |
 | `src/tasks/printLabels.ts` | group by format → print page → set quantities → submit → save |
 | `src/tasks/shipmentLabels.ts` | workflow id → `LabelRequest[]`, and the combined print path |
-| `src/printer.ts` | Printer handoff — CUPS `lp`/`lpstat` on macOS/Linux, PowerShell/`Win32_Printer` on Windows (4B, PR #8, unmerged) |
+| `src/printer.ts` | Printer handoff — CUPS `lp`/`lpstat` on macOS/Linux, PowerShell/`Win32_Printer` on Windows (4B, merged in PR #8, follow-ups in PR #13) |
+| `src/logger.ts` | Console logger — everything writes to stderr so `--json`'s stdout stays pure JSON |
 | `src/types.ts` | `LabelRequest`, `LabelResult`, `ShipmentItem`, `InventoryItem`, `LabelFormat` |
 
-~1,400 lines of TypeScript total (on `feat/windows-printing`; ~1,140 on
-`main` before 4B). Small enough to read end to end.
+~1,570 lines of TypeScript total (on `fix/windows-printing-followups`;
+~1,140 on `main` before 4B). Small enough to read end to end.
 
 ---
 
@@ -187,16 +197,39 @@ default printer to it (`Win32_Printer.SetDefaultPrinter` via PowerShell +
 CIM, read back to confirm), fire `Start-Process -Verb Print` once per copy
 (the registered PDF handler's print verb, which only ever targets the
 default printer), **poll the target printer's job queue** (`Get-PrintJob`,
-by job id, run as a single PowerShell process per wait rather than one
-process per poll tick) until the job actually appears — up to 60s, falling
-back to a fixed 15s hold only if the queue can't be read — then restore the
-previous default printer. `--printers` lists `Win32_Printer` names on
-Windows. Implemented and typechecked on `feat/windows-printing` (**open PR
-#8**) but **not yet run against a real Windows machine with a physical
+run as a single PowerShell process per wait rather than one process per poll
+tick) until *our* job appears, then restore the previous default printer.
+"Ours" is matched by `DocumentName` against the PDF's file name (a
+case-insensitive *substring* check — `IndexOf`, not `EndsWith` — since a
+suffix check only covers a handler that sets `DocumentName` to the full
+path, and misses Edge's own decoration, `name.pdf - Profile 1 - Microsoft
+Edge`, where the file name is a prefix, not a suffix; Edge is the handler
+this is actually gated on), not just any new job id — an any-new-id test
+let a concurrent job from another machine on a shared printer satisfy the
+wait and release the default early. A name match returns immediately —
+that's the fast path, and the one that matters for run time: a `matched`
+copy returns as soon as the job shows up, but a copy that ends `unmatched`
+or `none` blocks for the **full poll timeout (60s)** before the default
+printer is restored, since there's no other way to be sure nothing more
+will show up. On a multi-copy or multi-group run, `unmatched`/`none`
+becoming the steady state (not the exception) is what turns a few-second
+operation into minutes — that's the concrete cost of a mismatch, not just
+a warning. When the deadline passes with new jobs seen but none matching by
+name, or nothing new at all, the send is still reported as successful but
+flagged `unconfirmed` with a reason (not a hard failure — a one-page label
+can spool and clear the queue between polls, and a false failure invites a
+duplicate reprint of the batch). Falls back to a fixed 15s hold only if the
+queue can't be read at all. `--printers` lists `Win32_Printer` names on
+Windows. Implemented and typechecked, merged in PR #8 with follow-ups in PR
+#13, but **not yet run against a real Windows machine with a physical
 printer** — the owner doesn't have warehouse PC access this session. Treat
 the first live run as the real test: use `--dry-run` first, confirm
-`PRINTER_NAME` matches `Get-CimInstance Win32_Printer`, and watch the job
-land in the Windows print queue.
+`PRINTER_NAME` matches `Get-CimInstance Win32_Printer`, watch the job land
+in the Windows print queue, and check the logged `Queue check for copy
+N/M: matched|unmatched|none` line — a run that's consistently `unmatched`
+(not `matched`) means the DocumentName substring check isn't firing on
+that PDF handler (and the run is paying the full 60s/copy for it) and is
+worth a follow-up fix.
 
 The fixed-timer design (a flat sleep instead of polling the queue) was
 tried and reverted after review — it raced the async PDF handler and could
@@ -220,14 +253,48 @@ but surfaced by the Windows work adding new throw sites — e.g. a stale
 caught by the group-wide `catch`, which re-recorded every SKU in the group as
 `'failed'`, clobbering SKUs already recorded `'skipped'` earlier in the same
 group and discarding `pdfPath` for SKUs whose PDF was actually saved fine.
-Now wrapped in its own try/catch so a printer failure records `'downloaded'`
-+ `pdfPath` + the error, and each group tracks which SKUs already have a
-result so the outer catch can't re-record them.
+Now wrapped in its own try/catch so a printer failure records `pdfPath` +
+the error instead of losing them. That failure is its own status —
+`'print-failed'`, added to `LabelResult` — not `'downloaded'`: an earlier
+version of this fix recorded it as `'downloaded'`, which preserved
+`pdfPath` but also meant `cli.ts`'s exit-code check (`status === 'failed'`)
+no longer caught it, so a printer misconfiguration silently exited 0.
+Review caught that regression; `'print-failed'` is checked alongside
+`'failed'` in `cli.ts`, and `'downloaded'` now means only "printing was
+never attempted" (dry run, or `PRINTER_NAME` unset) — each group also
+tracks which SKUs already have a result so the outer catch can't
+re-record them.
 
-PR #8 has been through three rounds of automated review (all findings
-confirmed and fixed, no pushback needed) — see the PR thread for the full
-list. Nothing outstanding on the review side; the only gate left is a real
-Windows run.
+Two more rounds landed on top of that, both on PR #13 (not #8, which was
+already merged by then):
+
+- **`unconfirmed` as structured data, not prose.** `sendToPrinter` returns
+  `SendResult` (`{ sent, unconfirmed? }`) instead of a bare boolean — a
+  Windows send that couldn't be confirmed (an `'unmatched'`/`'none'` queue
+  check, or an unreadable queue) sets `unconfirmed` to the reason instead of
+  silently reporting plain success. `LabelResult` grew a matching
+  `unconfirmed?: string` field, kept separate from `message` on purpose —
+  folding it into `message` (an earlier version of this fix did that) meant
+  a `--json` consumer could only tell a confirmed `'printed'` from an
+  unconfirmed one by string-matching English prose. Exit code deliberately
+  untouched by `unconfirmed`: it's not proof of failure, and treating it as
+  one invites a duplicate reprint of the whole batch.
+- **`src/logger.ts` now routes everything to stderr.** `info`/`step`/`done`
+  used to go through `console.log` — the same stream `cli.ts`'s `--json`
+  writes its `JSON.stringify(...)` output to — so every progress line
+  logged during a run (including the `Queue check for copy N/M: ...` line
+  above) landed in front of the JSON blob, and `npm run print -- ... --json
+  | jq ...` couldn't parse stdout at all. `unconfirmed` as a structured
+  field was pointless until this was fixed, since nothing could read it back
+  out.
+
+PR #8 was through four rounds of automated review before merging — most
+findings confirmed and fixed outright, one (the `'downloaded'`-vs-exit-code
+point above) genuine pushback that changed the design mid-PR rather than a
+rubber-stamp. PR #13 has been through several more rounds on top of that
+(7 commits as of `e261995`), including the two just described. See each
+PR's thread for the full list. Nothing outstanding on the review side as of
+this commit; the only gate left is a real Windows run.
 
 Still open: setup docs need `nvm-windows` notes — it ignores `.nvmrc`.
 
@@ -259,6 +326,15 @@ Chromium window being closed or interfered with during the ~60s wait
   implement the valid ones, and **challenge the invalid ones in a reply comment**
   rather than silently complying. (This has paid off — acting on review findings
   in PR #6 uncovered three real bugs that the findings themselves hadn't spotted.)
-- README is kept current as part of the change, not afterwards.
+- README **and this file** are kept current as part of the change, not
+  afterwards. This slipped repeatedly during PRs #13 — reviewers found
+  stale status tables, wrong PR numbers, and mechanism descriptions that
+  described a previous commit's behavior, in the same PR that caused the
+  drift, more than once. Concretely: after any change to `src/`, or when a
+  PR opens/merges/rebases, re-check §2's status table, any PR
+  number/branch name/merge state mentioned anywhere in this file or
+  README.md, and §7's mechanism write-ups against what the code now
+  actually does — before considering the task finished, not as a
+  follow-up once a reviewer points it out.
 - Verification means checking the **actual artifact** (open the PDF, count the
   pages, count distinct FNSKUs), not "no error thrown".
