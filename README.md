@@ -13,7 +13,9 @@ structured input (`--file products.json`) and can emit structured output
 - Node **22** (an `.nvmrc` is included — run `nvm use`)
 - A Seller Central account with FBA/label permissions
 - Optional: a printer for auto-printing — CUPS on macOS/Linux (`lpstat -p`),
-  any installed printer on Windows (see [Printing on Windows](#printing-on-windows))
+  or any installed printer on Windows (silent printing there is handled by
+  the `pdf-to-printer` npm dependency, no extra install — see
+  [Printing on Windows](#printing-on-windows))
 
 ## Setup
 
@@ -171,58 +173,42 @@ either side. But the mechanism is very different, because Windows has no
 CLI equivalent of `lp -d <printer>`:
 
 - There's no built-in way to send a PDF to a *named* printer from the
-  command line. The only printer-agnostic route is the registered PDF
-  handler's "Print" shell verb (`Start-Process -Verb Print`), and that verb
-  always prints to the current **default** printer — it doesn't take a
-  printer name.
-- So each print job: reads the current Windows default printer, flips the
-  default to `PRINTER_NAME` (via `Win32_Printer.SetDefaultPrinter` over
-  PowerShell/CIM), fires the Print verb once per copy, **waits for the job
-  to actually appear in that printer's queue**, then restores the original
-  default.
-- The wait matters. `Start-Process -Verb Print` returns as soon as the
-  viewer *launches*, but the viewer reads the default printer when it
-  *submits* — potentially many seconds later on an Edge cold start.
-  Restoring the default on a fixed timer instead would send the labels to
-  whatever printer was default before, while still reporting success.
-- `PRINTER_NAME` is resolved against the installed printers *before* the
-  default is touched at all — a name that matches nothing fails loudly
-  without changing anything on the machine, rather than quietly printing to
-  the existing default. Setting the default is separately verified by
-  reading it back afterward, which catches the (rarer) case of the default
-  changing out from under the run between the set and the check.
-- "Appear in the queue" means a print job whose `DocumentName` contains the
-  PDF's file name — not just any new job — so a concurrent job from another
-  machine on a shared printer can't be mistaken for ours. If the wait times
-  out without a match (the PDF handler's `DocumentName` doesn't resemble the
-  file name, or the job genuinely never printed), the run still reports
-  success but flags it: the console shows a warning and, with `--json`, the
-  result carries an `unconfirmed` field explaining why. That's not a failure
-  — a label can print and clear the queue faster than it's observed — but
-  it's worth watching for on the first live run, since a *consistently*
-  unconfirmed result means the matching isn't working on that machine.
-- This needs a PDF viewer with a registered Print verb — Edge (installed on
-  every Windows box) or Acrobat both work.
-- `--printers` on Windows lists `Win32_Printer` names instead of CUPS
-  queues.
-
-This flips the machine's default printer for the duration of the print
-call, and restores it afterward. Two cases where it doesn't get restored:
-
-- The process is killed mid-print — the default may be left pointing at
-  `PRINTER_NAME` until the next run (or you fix it in Settings).
-- The machine had **no** default printer to begin with (common on freshly
-  imaged or kiosk-style PCs). Windows has no "unset the default" call, so
-  `PRINTER_NAME` is left as the default and the run logs a warning saying
-  so.
+  command line. Two earlier versions of this tried to route around that gap
+  by driving whatever PDF viewer happened to be registered on the machine —
+  first the registered handler's "Print" shell verb
+  (`Start-Process -Verb Print`), then a manually-downloaded copy of
+  SumatraPDF shelled out to directly. The shell-verb approach pops that
+  viewer's own print dialog instead of printing silently (assumed to be
+  Edge, but on the machine that actually hit this it was Acrobat Reader —
+  proving the point: whichever viewer is "the" PDF handler varies by
+  machine, so depending on it at all is fragile), and the manual-Sumatra
+  approach fixed the popup but pushed a real setup step onto every teammate
+  that lives outside `npm install`.
+- This now uses the **[`pdf-to-printer`](https://github.com/artiebits/pdf-to-printer)**
+  npm package instead, which is just a regular dependency — `npm install`
+  is the only setup step, nothing to separately download. It bundles its
+  own copy of SumatraPDF *inside the package* and drives that directly, so
+  it isn't at the mercy of whatever's registered as the system's PDF
+  handler. Its `print()` call targets a printer by name with `-print-to`
+  (silent by default, no dialog), and its promise only resolves once the
+  job has been handed off — so a clean resolve *is* the print confirmation,
+  with no queue-polling or default-printer juggling needed to find out
+  whether it worked.
+- `PRINTER_NAME` is resolved against the installed printers (via the same
+  package's `getPrinters()`) *before* `print()` is ever called — a name
+  that matches nothing fails loudly without attempting to print, rather
+  than silently doing something unexpected with a bad printer argument.
+- `--printers` on Windows lists the same printer names Windows itself
+  knows about, sourced through `pdf-to-printer` instead of CUPS queues.
 
 This Windows-specific path hasn't yet been verified against a real Windows
 box + physical printer — the code paths were written and typechecked but
 not run live; treat the first real run as the actual test and watch it
-happen (`--dry-run` first, or watch the print job appear in the print
-queue). The macOS/CUPS path this Windows code sits alongside *has* been
-live-verified — real Seller Central data, a real dry-run PDF, and a real
-print to a physical CUPS printer, confirmed correct.
+happen (`--dry-run` first, then a real one-copy print to confirm the label
+comes out with no popup to click through). The macOS/CUPS path this
+Windows code sits alongside *has* been live-verified — real Seller Central
+data, a real dry-run PDF, and a real print to a physical CUPS printer,
+confirmed correct.
 
 ### Setting `PRINTER_NAME` on Windows
 
@@ -269,11 +255,10 @@ npm run print -- --sku ABC-123 --qty 1 --dry-run
 npm run print -- --sku ABC-123 --qty 1
 ```
 
-If `PRINTER_NAME` doesn't match any `Win32_Printer` name, the run errors out
-before touching the machine's default printer at all — it will not silently
-fall back to whatever printer happened to be default. (The match is
-case-insensitive, so a case difference between `.env` and Windows is fine;
-it just has to be the same name.)
+If `PRINTER_NAME` doesn't match any installed printer, the run errors out
+before `print()` is ever called — it will not silently fall back to some
+other printer. (The match is case-insensitive, so a case difference between
+`.env` and Windows is fine; it just has to be the same name.)
 
 ## Where the PDFs go
 
@@ -299,7 +284,7 @@ npm run list -- --search "coffee"
 | [src/pages/shipmentPage.ts](src/pages/shipmentPage.ts) | Send to Amazon content step — reads a shipment's SKUs and unit counts |
 | [src/tasks/printLabels.ts](src/tasks/printLabels.ts) | Batch flow: group by format → fetch each SKU's PDF and merge with `pdf-lib` (default), or one print-labels page load per group (`--combine`) → save |
 | [src/tasks/shipmentLabels.ts](src/tasks/shipmentLabels.ts) | Turns a shipment workflow into label requests |
-| [src/printer.ts](src/printer.ts) | Printer handoff — CUPS `lp` on macOS/Linux, PowerShell/Win32_Printer on Windows |
+| [src/printer.ts](src/printer.ts) | Printer handoff — CUPS `lp` on macOS/Linux, `pdf-to-printer` (bundled SumatraPDF) on Windows |
 
 ## How it works
 
