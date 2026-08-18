@@ -1,8 +1,9 @@
 # Project context & status
 
 Handoff doc for starting a fresh Claude Code / Codex session on this repo without
-re-deriving everything. Last updated **2026-08-15** (main @ `86efc9c`, which
-merged PR #8 / 4B; **open PR #13** has follow-up fixes on top, see below).
+re-deriving everything. Last updated **2026-08-16** (main @ `184c215`, which
+includes PR #8 / 4B; **open PR #13**, branch `fix/windows-printing-followups`,
+has follow-up fixes on top — see below).
 
 ---
 
@@ -46,16 +47,20 @@ fixes on an open PR, still gated on a real Windows run.
 Sequencing 4B/4C/4D was the owner's call: shipment mode first (done), the rest
 after. Confirm with the owner before starting any of C/D.
 
-`main` (`86efc9c`) contains Phases 1–3, 4A, 4B (PR #8, squash-merged — its
+`main` (`184c215`) contains Phases 1–3, 4A, 4B (PR #8, squash-merged — its
 branch history isn't preserved on `main`, so don't try to rebase onto it
 expecting a fast-forward; cherry-pick instead), and the Claude Code GitHub
-Actions review workflow (PRs #9, #11, #12 — automated PR review, not a
-project phase). **`fix/windows-printing-followups` (PR #13, open)** has
-three review findings from #8 that landed after #8 had already merged —
-job-identity matching in the print-queue poll, surfacing unconfirmed print
-handoffs instead of reporting them as plain success, and this file's own
-accuracy. Start a fresh session from `main` only if 4B isn't the task;
-otherwise check out/continue that branch.
+Actions review workflow (PRs #9, #11, #12, #14 — automated PR review and its
+own upkeep, not a project phase). **`fix/windows-printing-followups` (PR
+#13, open, 7 commits)** carries everything from #8's review that landed
+after #8 had already merged, plus several more rounds of review on #13
+itself — job-identity matching in the print-queue poll (by `DocumentName`
+substring, not job id), surfacing unconfirmed print handoffs as structured
+data instead of plain-text prose or silent success, routing all log output
+to stderr so `--json` is actually pipeable, and this file's own accuracy
+(multiple times — it kept drifting behind the code each round). Start a
+fresh session from `main` only if 4B isn't the task; otherwise check
+out/continue that branch.
 PR #4 ("Added my print label script in project sub-directory") is still **open**
 and is a stale/superseded PR from before the rewrite — check with the owner
 before touching it.
@@ -92,11 +97,12 @@ Common flags: `--dry-run` (download PDF, never print), `--headed`, `--json`,
 | `src/pages/shipmentPage.ts` | Send to Amazon content step — scrapes a shipment's SKUs/units |
 | `src/tasks/printLabels.ts` | group by format → print page → set quantities → submit → save |
 | `src/tasks/shipmentLabels.ts` | workflow id → `LabelRequest[]`, and the combined print path |
-| `src/printer.ts` | Printer handoff — CUPS `lp`/`lpstat` on macOS/Linux, PowerShell/`Win32_Printer` on Windows (4B, PR #8, unmerged) |
+| `src/printer.ts` | Printer handoff — CUPS `lp`/`lpstat` on macOS/Linux, PowerShell/`Win32_Printer` on Windows (4B, merged in PR #8, follow-ups in PR #13) |
+| `src/logger.ts` | Console logger — everything writes to stderr so `--json`'s stdout stays pure JSON |
 | `src/types.ts` | `LabelRequest`, `LabelResult`, `ShipmentItem`, `InventoryItem`, `LabelFormat` |
 
-~1,400 lines of TypeScript total (on `feat/windows-printing`; ~1,140 on
-`main` before 4B). Small enough to read end to end.
+~1,570 lines of TypeScript total (on `fix/windows-printing-followups`;
+~1,140 on `main` before 4B). Small enough to read end to end.
 
 ---
 
@@ -259,12 +265,36 @@ never attempted" (dry run, or `PRINTER_NAME` unset) — each group also
 tracks which SKUs already have a result so the outer catch can't
 re-record them.
 
-PR #8 has been through four rounds of automated review. Most findings were
-confirmed and fixed outright; one (the `'downloaded'`-vs-exit-code point
-above) was genuine pushback that changed the design mid-PR rather than a
-rubber-stamped fix — worth knowing before assuming everything landed on the
-first pass. See the PR thread for the full list. Nothing outstanding on the
-review side as of this commit; the only gate left is a real Windows run.
+Two more rounds landed on top of that, both on PR #13 (not #8, which was
+already merged by then):
+
+- **`unconfirmed` as structured data, not prose.** `sendToPrinter` returns
+  `SendResult` (`{ sent, unconfirmed? }`) instead of a bare boolean — a
+  Windows send that couldn't be confirmed (an `'unmatched'`/`'none'` queue
+  check, or an unreadable queue) sets `unconfirmed` to the reason instead of
+  silently reporting plain success. `LabelResult` grew a matching
+  `unconfirmed?: string` field, kept separate from `message` on purpose —
+  folding it into `message` (an earlier version of this fix did that) meant
+  a `--json` consumer could only tell a confirmed `'printed'` from an
+  unconfirmed one by string-matching English prose. Exit code deliberately
+  untouched by `unconfirmed`: it's not proof of failure, and treating it as
+  one invites a duplicate reprint of the whole batch.
+- **`src/logger.ts` now routes everything to stderr.** `info`/`step`/`done`
+  used to go through `console.log` — the same stream `cli.ts`'s `--json`
+  writes its `JSON.stringify(...)` output to — so every progress line
+  logged during a run (including the `Queue check for copy N/M: ...` line
+  above) landed in front of the JSON blob, and `npm run print -- ... --json
+  | jq ...` couldn't parse stdout at all. `unconfirmed` as a structured
+  field was pointless until this was fixed, since nothing could read it back
+  out.
+
+PR #8 was through four rounds of automated review before merging — most
+findings confirmed and fixed outright, one (the `'downloaded'`-vs-exit-code
+point above) genuine pushback that changed the design mid-PR rather than a
+rubber-stamp. PR #13 has been through several more rounds on top of that
+(7 commits as of `e261995`), including the two just described. See each
+PR's thread for the full list. Nothing outstanding on the review side as of
+this commit; the only gate left is a real Windows run.
 
 Still open: setup docs need `nvm-windows` notes — it ignores `.nvmrc`.
 
@@ -296,6 +326,15 @@ Chromium window being closed or interfered with during the ~60s wait
   implement the valid ones, and **challenge the invalid ones in a reply comment**
   rather than silently complying. (This has paid off — acting on review findings
   in PR #6 uncovered three real bugs that the findings themselves hadn't spotted.)
-- README is kept current as part of the change, not afterwards.
+- README **and this file** are kept current as part of the change, not
+  afterwards. This slipped repeatedly during PRs #13 — reviewers found
+  stale status tables, wrong PR numbers, and mechanism descriptions that
+  described a previous commit's behavior, in the same PR that caused the
+  drift, more than once. Concretely: after any change to `src/`, or when a
+  PR opens/merges/rebases, re-check §2's status table, any PR
+  number/branch name/merge state mentioned anywhere in this file or
+  README.md, and §7's mechanism write-ups against what the code now
+  actually does — before considering the task finished, not as a
+  follow-up once a reviewer points it out.
 - Verification means checking the **actual artifact** (open the PDF, count the
   pages, count distinct FNSKUs), not "no error thrown".

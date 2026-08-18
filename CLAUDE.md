@@ -26,3 +26,20 @@ dead ends already ruled out.
 - Feature branch → push → PR against `main`. Never commit directly to `main`.
 - Verify against the real artifact (open the PDF, count pages/FNSKUs), not
   "no error thrown".
+- **Docs are part of the diff, not a follow-up commit.** Before calling any
+  code change done — and always before opening or updating a PR — check
+  whether it invalidates something [docs/PROJECT_CONTEXT.md](docs/PROJECT_CONTEXT.md)
+  or README.md currently states, and fix it in the same commit. Concretely,
+  re-check these every time `src/` changes, a PR opens/merges, or a branch
+  changes:
+  - The phase/status table and "Current status" narrative in PROJECT_CONTEXT.md §2.
+  - Any PR number, merge state, or branch name mentioned anywhere in either
+    file — these go stale the moment a PR merges or a new one opens.
+  - Mechanism descriptions in PROJECT_CONTEXT.md §7 ("Open threads") and any
+    matching section of README.md — if you changed *how* something works,
+    the prose describing how it works is now wrong until you fix it.
+  - `main`'s head commit hash in PROJECT_CONTEXT.md's header line.
+  This has slipped repeatedly in past sessions — reviewers keep finding
+  stale docs in the same PR that introduced the drift. Treat this as a hard
+  checklist item on every non-trivial task, not something to remember to
+  get to.

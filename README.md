@@ -184,6 +184,16 @@ CLI equivalent of `lp -d <printer>`:
   the existing default. Setting the default is separately verified by
   reading it back afterward, which catches the (rarer) case of the default
   changing out from under the run between the set and the check.
+- "Appear in the queue" means a print job whose `DocumentName` contains the
+  PDF's file name — not just any new job — so a concurrent job from another
+  machine on a shared printer can't be mistaken for ours. If the wait times
+  out without a match (the PDF handler's `DocumentName` doesn't resemble the
+  file name, or the job genuinely never printed), the run still reports
+  success but flags it: the console shows a warning and, with `--json`, the
+  result carries an `unconfirmed` field explaining why. That's not a failure
+  — a label can print and clear the queue faster than it's observed — but
+  it's worth watching for on the first live run, since a *consistently*
+  unconfirmed result means the matching isn't working on that machine.
 - This needs a PDF viewer with a registered Print verb — Edge (installed on
   every Windows box) or Acrobat both work.
 - `--printers` on Windows lists `Win32_Printer` names instead of CUPS
