@@ -115,7 +115,8 @@ jobs:
                   reviewed yet, and either wait for claude-pr-review.yml to finish if it's still running
                   (`gh run list` filtered to this PR's branch), or — if a full review genuinely doesn't
                   exist for this commit and none is in progress — do the same review yourself: diff,
-                  CLAUDE.md, the six angles, blocking-vs-advisory split, and end with the same exact
+                  CLAUDE.md, the same finder angles claude-pr-review.yml uses, the blocking-vs-advisory
+                  split and 12-finding cap, and end with the same exact
                   `This PR is ready to merge.` / `This PR is NOT ready to merge.` sentence. Don't answer
                   a merge-readiness question with a guess when you can just go check.
 

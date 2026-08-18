@@ -22,6 +22,22 @@ name: Claude PR Review
 # produce REQUEST_CHANGES — style/simplification/efficiency findings are
 # advisory and can accompany an APPROVE, but never block one. See step 9.
 #
+# Step 3's finder angles are modeled on this project's own interactive
+# /code-review skill (10 angles at its highest effort level: line-by-line,
+# removed-behavior, cross-file, language pitfalls, wrapper/proxy correctness,
+# reuse, simplification, efficiency, altitude, conventions). Wrapper/proxy
+# correctness is left out — this codebase doesn't have much
+# cache/decorator/adapter-shaped code for it to apply to. One deliberate,
+# unclosed gap from that skill: its higher effort levels verify each
+# candidate in a genuinely separate pass (an independent subagent, so
+# verification isn't just the same reasoning that found something
+# rubber-stamping itself) — step 4 below verifies in the same continuous
+# context that generated the candidates, weaker against self-confirmation
+# bias. Closing that would mean granting the Task tool and confirming
+# claude-code-action's runtime actually supports subagents the way
+# interactive Claude Code does, which is untested here — left as a
+# follow-up rather than shipped unverified.
+#
 # Requires:
 #   - The Claude GitHub App installed on this repo (https://github.com/apps/claude)
 #   - Secret ANTHROPIC_API_KEY set on the repo. To use a subscription token
@@ -129,14 +145,35 @@ jobs:
                   disables a check by default, or reports success without confirming the underlying
                   action actually happened (race between an async handoff and the code that assumes
                   it's done is a common shape here).
-               e. Cleanup: real duplication the diff introduces or leaves behind, unnecessary
-                  complexity, dead code — but only where removing it doesn't cost correctness.
-               f. Conventions: violations of an explicit rule in a governing CLAUDE.md file. Quote the
+               e. Language/runtime pitfalls: the classic footguns of whatever language the diff is in —
+                  for JS/TS specifically, closure-captured loop variables, falsy-zero checks (`if (x)`
+                  where `0`/`''` is a valid value), `==` coercion, `noUncheckedIndexedAccess` violations
+                  a cast papers over, unhandled promise rejections, mixing sync/async incorrectly. Flag
+                  any instance the diff introduces, not just ones matching angle (a)'s general checklist.
+               f. Efficiency: redundant computation or repeated I/O the diff adds, independent async
+                  operations run sequentially that could run in parallel (`Promise.all`), work added to
+                  a hot path or startup that could be deferred, and closures that capture more of their
+                  enclosing scope than they need (a memory-lifetime issue, not just a style one, when the
+                  captured scope holds a large object like a Buffer or a Page).
+               g. Altitude: is each change implemented at the right depth, or is it a special case
+                  layered on top of shared infrastructure to patch one symptom? A narrow `if` added to
+                  paper over a case that the underlying function should just handle correctly is a
+                  finding — name the deeper fix, not just the patch.
+               h. Reuse: does the diff reimplement something a shared/utility module in this repo already
+                  does? Grep for it and name the existing helper before flagging this — a false "this
+                  already exists" is worse than not flagging it.
+               i. Simplification: unnecessary complexity distinct from (h) — redundant or derivable
+                  state, copy-paste with small variations that should be one function, deep nesting, dead
+                  code left behind — where removing it doesn't cost correctness.
+               j. Conventions: violations of an explicit rule in a governing CLAUDE.md file. Quote the
                   rule and the line; no vague "spirit of the doc" inferences.
             4. For every candidate from every angle, verify it against the actual code: name the
                concrete input/state that triggers it and the wrong output, or state what would need to
                be true (timing, config, env) for it to fire if you can't fully confirm it. Drop anything
-               you can't ground in the real code.
+               you can't ground in the real code. Then prioritize: if more than 12 findings survive
+               verification, keep the 12 most severe (blocking always outranks advisory) and drop the
+               rest rather than posting all of them — a pile of two dozen comments gets skimmed, not
+               read, and defeats the point of separating blocking from advisory in the first place.
             5. Before posting, fetch the review comments already on this PR:
                `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments --paginate`
                This workflow re-runs on every push, so most re-runs are re-reviews of a PR you have
@@ -147,9 +184,10 @@ jobs:
             7. Sort every surviving finding into exactly one of two buckets. This split is what step 9's
                verdict is built from, so get it right:
                - **Blocking**: a genuine correctness bug, a security/injection risk, or logic that's
-                 provably broken for some real input/state. Angles a-d from step 3 land here.
-               - **Advisory**: everything else that's still worth saying — real duplication, unnecessary
-                 complexity, a genuine CLAUDE.md violation (angles e-f) — but not proof the PR misbehaves.
+                 provably broken for some real input/state. Angles a-e from step 3 land here.
+               - **Advisory**: everything else that's still worth saying — redundant/sequential work,
+                 a patch instead of a deeper fix, real duplication, unnecessary complexity, a genuine
+                 CLAUDE.md violation (angles f-j) — but not proof the PR misbehaves.
                If you can't point at a concrete input/state/output that's wrong, it's advisory, not
                blocking, no matter how strongly you feel about it. When in doubt, downgrade — false
                blocks cost more than a missed advisory note.
