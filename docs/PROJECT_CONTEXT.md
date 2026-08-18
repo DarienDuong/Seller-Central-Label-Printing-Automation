@@ -52,9 +52,9 @@ branch history isn't preserved on `main`, so don't try to rebase onto it
 expecting a fast-forward; cherry-pick instead), and the Claude Code GitHub
 Actions review workflow (PRs #9, #11, #12, #14 — automated PR review and its
 own upkeep, not a project phase). **`fix/windows-printing-followups` (PR
-#13, open, 7 commits)** carries everything from #8's review that landed
-after #8 had already merged, plus several more rounds of review on #13
-itself — job-identity matching in the print-queue poll (by `DocumentName`
+#13, open)** carries everything from #8's review that landed after #8 had
+already merged, plus several more rounds of review on #13 itself —
+job-identity matching in the print-queue poll (by `DocumentName`
 substring, not job id), surfacing unconfirmed print handoffs as structured
 data instead of plain-text prose or silent success, routing all log output
 to stderr so `--json` is actually pipeable, and this file's own accuracy
