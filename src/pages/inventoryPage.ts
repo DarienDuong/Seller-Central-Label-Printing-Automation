@@ -3,6 +3,14 @@ import { gotoAuthed } from '../auth.js';
 import type { InventoryItem, LabelFormat } from '../types.js';
 
 /**
+ * Seller Central's own default thermal size when Width/Height (mm) are left
+ * blank. Shared by setFormat() (--combine path), fetchLabelPdf() (default
+ * path), and groupByFormat()'s grouping key in printLabels.ts, so the three
+ * can't silently diverge on what "default thermal size" means.
+ */
+export const DEFAULT_THERMAL_MM = { width: 57, height: 32 } as const;
+
+/**
  * Page object for Manage Inventory and the Print Item Labels flow.
  *
  * Verified 2026-08-12 against a live account. Seller Central's inventory grid
@@ -128,8 +136,8 @@ export class InventoryPage {
     await this.chooseDropdownOption('Choose printing format', isThermal ? 'Thermal printing' : 'Standard formats');
 
     if (isThermal) {
-      const widthMm = thermal?.widthMm ?? 57;
-      const heightMm = thermal?.heightMm ?? 32;
+      const widthMm = thermal?.widthMm ?? DEFAULT_THERMAL_MM.width;
+      const heightMm = thermal?.heightMm ?? DEFAULT_THERMAL_MM.height;
       await this.page.locator('kat-input[label="Width (mm)"] input').fill(String(widthMm));
       await this.page.locator('kat-input[label="Height (mm)"] input').fill(String(heightMm));
     } else {
@@ -141,6 +149,62 @@ export class InventoryPage {
   private async chooseDropdownOption(dropdownLabel: string, optionText: string): Promise<void> {
     await this.page.locator(`kat-dropdown[label="${escapeAttr(dropdownLabel)}"]`).click();
     await this.page.locator('kat-option').filter({ hasText: optionText }).first().click();
+  }
+
+  /**
+   * Call Seller Central's private getPdfContent endpoint directly for one
+   * SKU, instead of a full page load. Found by patching window.fetch on the
+   * live page and observing real traffic — see docs/PROJECT_CONTEXT.md §7
+   * (Phase 5) for how, and why `fnsku` is safe to omit (the server resolves
+   * it from `msku`). Runs inside the page via page.evaluate rather than a
+   * bare HTTP client so the call carries the page's own cookies/headers,
+   * matching exactly what was observed. Requires the page to already be on
+   * a Seller Central origin (openPrintLabelsPage()) so the session applies.
+   *
+   * An unknown msku 500s here — unlike the DOM path, which silently drops
+   * unknown SKUs from the rendered page — so callers should treat a thrown
+   * error as "SKU not found or API error", not just "API error".
+   */
+  async fetchLabelPdf(
+    msku: string,
+    quantity: number,
+    format: LabelFormat,
+    thermal?: { widthMm?: number; heightMm?: number },
+  ): Promise<Buffer> {
+    const isThermal = format === 'thermal';
+    const payload = {
+      itemLabelDataList: [{ msku, quantity }],
+      labelType: isThermal ? 'SINGLE_MULTILINE' : 'MULTIPLE',
+      ...(isThermal ? {} : { pageType: format }),
+      ...(isThermal
+        ? { width: thermal?.widthMm ?? DEFAULT_THERMAL_MM.width, height: thermal?.heightMm ?? DEFAULT_THERMAL_MM.height }
+        : {}),
+    };
+
+    const base64 = await this.page.evaluate(async (body) => {
+      const res = await fetch('/fba/printitemlabel/ping/getPdfContent', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // content-type is application/octet-stream, not application/pdf — the
+      // magic bytes are the only reliable signal (see docs/PROJECT_CONTEXT.md
+      // §5 on trusting content over headers for this SPA's endpoints).
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      const header = String.fromCharCode(...bytes.subarray(0, 5));
+      if (header !== '%PDF-') throw new Error(`unexpected response body (not a PDF): ${header}`);
+
+      let binary = '';
+      const CHUNK = 0x8000;
+      for (let i = 0; i < bytes.length; i += CHUNK) {
+        binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+      }
+      return btoa(binary);
+    }, payload);
+
+    return Buffer.from(base64, 'base64');
   }
 
   /**
