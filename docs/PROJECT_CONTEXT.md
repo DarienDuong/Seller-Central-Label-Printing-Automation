@@ -1,9 +1,11 @@
 # Project context & status
 
 Handoff doc for starting a fresh Claude Code / Codex session on this repo without
-re-deriving everything. Last updated **2026-08-18** (main @ `7e5340b`, which
-includes PR #8 / 4B and its follow-ups from PR #13, plus the verified-printer
-doc pass in PR #17 — all merged, see below).
+re-deriving everything. Last updated **2026-08-18** (main @ `d09ea1a`, which
+includes PR #8 / 4B and its follow-ups from PR #13, the verified-printer doc
+pass in PR #17, the Phase 5 plan / SP-API research in PR #18, and the PR-review
+cost cut in PR #19 — all merged, see below). Not yet on `main`: the Windows
+print mechanism switched from Edge's Print verb to SumatraPDF, see §7.
 
 ---
 
@@ -60,13 +62,14 @@ after. Confirm with the owner before starting any of C/D.
 4C's MCP tool schema wraps that surface — building the schema first means
 reworking it immediately after.
 
-`main` (`7e5340b`) contains Phases 1–3, 4A, 4B (PR #8 and its follow-ups in
+`main` (`d09ea1a`) contains Phases 1–3, 4A, 4B (PR #8 and its follow-ups in
 PR #13, both squash-merged — their branch history isn't preserved on `main`,
 so don't try to rebase a leftover branch onto it expecting a fast-forward;
 cherry-pick instead), and the Claude Code GitHub Actions review workflow
-(PRs #9, #11, #12, #14, #15 — automated PR review and its own upkeep, not a
-project phase), the context doc you're reading (PR #7), and a doc-accuracy
-pass in PR #17. PR #13 carried everything from #8's review that landed
+(PRs #9, #11, #12, #14, #15, #19 — automated PR review and its own upkeep,
+not a project phase), the context doc you're reading (PR #7), a doc-accuracy
+pass in PR #17, and the Phase 5 plan / SP-API research in PR #18. PR #13
+carried everything from #8's review that landed
 after #8 had already merged, plus several more rounds of review on #13
 itself — job-identity matching in the print-queue poll (by `DocumentName`
 substring, not job id), surfacing unconfirmed print handoffs as structured
@@ -109,12 +112,13 @@ Common flags: `--dry-run` (download PDF, never print), `--headed`, `--json`,
 | `src/pages/shipmentPage.ts` | Send to Amazon content step — scrapes a shipment's SKUs/units |
 | `src/tasks/printLabels.ts` | group by format → print page → set quantities → submit → save |
 | `src/tasks/shipmentLabels.ts` | workflow id → `LabelRequest[]`, and the combined print path |
-| `src/printer.ts` | Printer handoff — CUPS `lp`/`lpstat` on macOS/Linux, PowerShell/`Win32_Printer` on Windows (4B, merged in PR #8, follow-ups in PR #13) |
+| `src/printer.ts` | Printer handoff — CUPS `lp`/`lpstat` on macOS/Linux; on Windows, `Win32_Printer` (PowerShell/CIM) to resolve the printer name plus SumatraPDF for the actual silent print (see §7) |
 | `src/logger.ts` | Console logger — everything writes to stderr so `--json`'s stdout stays pure JSON |
 | `src/types.ts` | `LabelRequest`, `LabelResult`, `ShipmentItem`, `InventoryItem`, `LabelFormat` |
 
-~1,570 lines of TypeScript total on `main` (~1,140 before 4B merged).
-Small enough to read end to end.
+~1,350 lines of TypeScript total (dropped from ~1,570 when the Windows
+print path was simplified from default-printer-flip + queue-polling to a
+single SumatraPDF call — see §7). Small enough to read end to end.
 
 ---
 
@@ -219,48 +223,39 @@ These cost real debugging time. Don't rediscover them.
 ## 7. Open threads / next work
 
 **4B — Windows support.** `src/printer.ts` now branches on `os.platform()`.
-Windows has no CLI equivalent of `lp -d <printer>`, so the approach is:
-resolve `PRINTER_NAME` to Windows's own exact printer-name string, flip the
-default printer to it (`Win32_Printer.SetDefaultPrinter` via PowerShell +
-CIM, read back to confirm), fire `Start-Process -Verb Print` once per copy
-(the registered PDF handler's print verb, which only ever targets the
-default printer), **poll the target printer's job queue** (`Get-PrintJob`,
-run as a single PowerShell process per wait rather than one process per poll
-tick) until *our* job appears, then restore the previous default printer.
-"Ours" is matched by `DocumentName` against the PDF's file name (a
-case-insensitive *substring* check — `IndexOf`, not `EndsWith` — since a
-suffix check only covers a handler that sets `DocumentName` to the full
-path, and misses Edge's own decoration, `name.pdf - Profile 1 - Microsoft
-Edge`, where the file name is a prefix, not a suffix; Edge is the handler
-this is actually gated on), not just any new job id — an any-new-id test
-let a concurrent job from another machine on a shared printer satisfy the
-wait and release the default early. A name match returns immediately —
-that's the fast path, and the one that matters for run time: a `matched`
-copy returns as soon as the job shows up, but a copy that ends `unmatched`
-or `none` blocks for the **full poll timeout (60s)** before the default
-printer is restored, since there's no other way to be sure nothing more
-will show up. On a multi-copy or multi-group run, `unmatched`/`none`
-becoming the steady state (not the exception) is what turns a few-second
-operation into minutes — that's the concrete cost of a mismatch, not just
-a warning. When the deadline passes with new jobs seen but none matching by
-name, or nothing new at all, the send is still reported as successful but
-flagged `unconfirmed` with a reason (not a hard failure — a one-page label
-can spool and clear the queue between polls, and a false failure invites a
-duplicate reprint of the batch). Falls back to a fixed 15s hold only if the
-queue can't be read at all. `--printers` lists `Win32_Printer` names on
-Windows. Implemented, typechecked, and merged (PR #8 + follow-ups in PR
-#13), but **still not run against a real Windows machine with a physical
-printer** — the owner doesn't have warehouse PC access. Treat the first
-live run as the real test: use `--dry-run` first, confirm `PRINTER_NAME`
-matches `Get-CimInstance Win32_Printer`, watch the job land in the Windows
-print queue, and check the logged `Queue check for copy N/M:
-matched|unmatched|none` line — a run that's consistently `unmatched` (not
-`matched`) means the DocumentName substring check isn't firing on that PDF
-handler (and the run is paying the full 60s/copy for it) and is worth a
-follow-up fix.
+Windows has no CLI equivalent of `lp -d <printer>`. The original approach
+(PR #8 + follow-ups in PR #13) flipped the Windows default printer and
+fired `Start-Process -Verb Print` — the registered PDF handler's print
+verb — then polled the target printer's job queue to confirm the handoff.
+In practice that verb resolves to Edge on every Windows box, and **Edge's
+Print verb opens Edge and shows its own print dialog** rather than
+printing silently — so every run needed a human to click "Print" in a
+popup, defeating the point of automating it. Reported by the owner
+2026-08-18 after the first hands-on use.
 
-**The macOS/CUPS side of this same code IS now live-verified** (2026-08-18,
-on `main` @ `6803398`): `npm run print --dry-run` against two representative
+Replaced the same day with **SumatraPDF** (a free, portable PDF viewer,
+`SUMATRA_PATH` in `.env`, default `SumatraPDF.exe` on PATH): its
+`-print-to <printer> -silent -exit-when-done` flags print straight to a
+named printer with **no dialog at all**, and the process only exits once
+the job has actually been handed to the spooler, so a clean exit code *is*
+the print confirmation. This eliminated the whole default-printer-flip /
+restore / queue-poll / `unconfirmed`-reason mechanism the old approach
+needed — `PRINTER_NAME` is still resolved to Windows's exact printer-name
+string first (`Win32_Printer`, same as before) so a bad name fails loudly
+before SumatraPDF is ever invoked, but there is no default printer to
+change or restore, and a clean SumatraPDF exit needs no separate
+confirmation step. `SendResult.unconfirmed` still exists on the type (macOS
+never sets it either) but nothing on the Windows path populates it now.
+`--printers` still lists `Win32_Printer` names on Windows. Implemented and
+typechecked, but **still not run against a real Windows machine with a
+physical printer** — the owner doesn't have warehouse PC access. Treat the
+first live run as the real test: install SumatraPDF, use `--dry-run`
+first, confirm `PRINTER_NAME` matches `Get-CimInstance Win32_Printer`,
+then a real one-copy print — watch for the label coming out with **no
+popup to click through** and no partial-success `unconfirmed` note.
+
+**The macOS/CUPS side of this same code IS now live-verified** (2026-08-18):
+`npm run print --dry-run` against two representative
 SKUs from the live account (quantities 2 and 22) produced correct 30-up
 PDFs, and a real (non-dry-run) print of one of them (qty 1) to a real CUPS
 printer (`Brother_DCP_L2550DW_series`) was confirmed to physically print
@@ -270,21 +265,19 @@ correctly. This also verified, live rather than just by reading the diff:
 reports `status: 'printed'` with no `message`/`unconfirmed`. Only Windows
 remains unverified.
 
-The fixed-timer design (a flat sleep instead of polling the queue) was
-tried and reverted after review — it raced the async PDF handler and could
-restore the default before the job was actually submitted, printing
-silently to the wrong device. Don't reintroduce a fixed sleep as the
-primary wait; the `HANDOFF_FALLBACK_MS` fixed wait is deliberately a
-fallback only, used when `Get-PrintJob` itself is unavailable.
-
-Known rough edges, both already surfaced with a log line rather than
-silently occurring:
-- If the process is killed mid-print, the Windows default printer can be
-  left pointed at `PRINTER_NAME` instead of restored.
-- If the machine had **no** default printer before the run (common on
-  freshly imaged / kiosk-style PCs), there's no "unset the default" API to
-  restore to — `PRINTER_NAME` is left as the new default even after a clean
-  run, with a warning logged.
+The fixed-timer design (a flat sleep instead of polling the queue), the
+default-printer flip/restore, and the whole `Get-PrintJob` polling
+mechanism described in the paragraphs above are **history, not current
+code** — they belonged to the original `Start-Process -Verb Print`
+approach and were removed 2026-08-18 when that approach turned out to pop
+Edge's own print dialog on every run (see the SumatraPDF switch above).
+Kept here because the reasoning (why a fixed sleep is unsafe, why job
+identity mattered) may be useful if a future PDF-handler-based approach is
+ever considered again, but none of `HANDOFF_FALLBACK_MS`, the default-
+printer rough edges, or `Get-PrintJob` polling exist in `src/printer.ts`
+anymore — SumatraPDF's `-exit-when-done` exit code is now the only
+confirmation signal, and there's no default printer being changed, so
+there's nothing left to restore or leave mis-set.
 
 Also fixed along the way, in `src/tasks/printLabels.ts` (not Windows-specific,
 but surfaced by the Windows work adding new throw sites — e.g. a stale
@@ -332,8 +325,13 @@ findings confirmed and fixed outright, one (the `'downloaded'`-vs-exit-code
 point above) genuine pushback that changed the design mid-PR rather than a
 rubber-stamp. PR #13 has been through several more rounds on top of that
 (7 commits as of `e261995`), including the two just described. See each
-PR's thread for the full list. Nothing outstanding on the review side as of
-this commit; the only gate left is a real Windows run.
+PR's thread for the full list. That review history is against the
+`Start-Process -Verb Print` mechanism, since superseded by the SumatraPDF
+switch above (2026-08-18, not yet through its own PR review) — the queue-
+identity and `unconfirmed`-vs-exit-code lessons carried over conceptually
+(SumatraPDF's exit code plays the role the queue poll used to), but the
+new code itself hasn't been reviewed yet. The gate left is a real Windows
+run plus review of the SumatraPDF change.
 
 Still open: setup docs need `nvm-windows` notes — it ignores `.nvmrc`.
 
