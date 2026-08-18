@@ -33,10 +33,42 @@ export interface LabelRequest {
 /** Result of processing a single LabelRequest. */
 export interface LabelResult {
   sku: string;
-  status: 'printed' | 'downloaded' | 'skipped' | 'failed';
+  /**
+   * 'downloaded' means the PDF was saved and printing was never attempted
+   * (dry run, or PRINTER_NAME unset). 'print-failed' means the PDF was
+   * saved but the printer handoff itself threw — pdfPath is still set, so
+   * the artifact isn't lost, but unlike 'downloaded' this counts as a
+   * command failure (see cli.ts's exit code check). 'printed' means the
+   * handoff didn't throw, but check `unconfirmed` before treating that as
+   * proof it reached the printer — see its doc comment.
+   */
+  status: 'printed' | 'downloaded' | 'print-failed' | 'skipped' | 'failed';
   /** Absolute path to the downloaded PDF, when one was produced. */
   pdfPath?: string;
   message?: string;
+  /**
+   * Set only when status is 'printed' and the handoff couldn't be confirmed
+   * (mirrors printer.ts's SendResult.unconfirmed — see its doc comment for
+   * why "printed" doesn't always mean "confirmed in the printer's queue").
+   * Kept as a distinct field rather than folded into `message` so a
+   * machine-readable consumer can tell a confirmed print from an
+   * unconfirmed one without parsing prose: `status === 'printed' &&
+   * !result.unconfirmed` is a real confirmation, `status === 'printed' &&
+   * result.unconfirmed` is "handed off, unverified." Deliberately doesn't
+   * affect cli.ts's exit code — an unconfirmed send is not proof of
+   * failure, and treating it as one invites a duplicate reprint of the
+   * whole batch.
+   */
+  unconfirmed?: string;
+}
+
+/** One SKU inside a Send to Amazon shipment, as shown on its content step. */
+export interface ShipmentItem {
+  sku: string;
+  /** Units being sent — one FNSKU label is needed per unit. */
+  units: number;
+  /** Boxes the units are split across. Informational; labels go on units. */
+  boxes?: number;
 }
 
 /** A row scraped out of Manage Inventory, for the `list` command. */

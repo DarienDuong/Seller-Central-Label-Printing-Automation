@@ -6,9 +6,10 @@ import { login } from './auth.js';
 import { launchSession } from './browser.js';
 import { InventoryPage } from './pages/inventoryPage.js';
 import { printLabels } from './tasks/printLabels.js';
+import { printShipmentLabels, readShipmentItems } from './tasks/shipmentLabels.js';
 import { listPrinters } from './printer.js';
 import { log } from './logger.js';
-import type { LabelFormat, LabelRequest } from './types.js';
+import type { LabelFormat, LabelRequest, LabelResult } from './types.js';
 
 const USAGE = `
 Seller Central label printing
@@ -16,17 +17,21 @@ Seller Central label printing
   npm run login                         Sign in once; saves the browser session
   npm run print -- --sku ABC-123 --qty 30
   npm run print -- --file data/products.json --dry-run
+  npm run print -- --shipment <wf-id>   Label a whole Send to Amazon shipment
+  npm run shipment -- --shipment <wf-id>  Show a shipment's SKUs, print nothing
   npm run list  -- --search "coffee"    Show matching inventory rows
 
 Options
   --sku <sku>          SKU to label (repeatable)
   --qty <n>            Labels per SKU (default 1; pairs with the preceding --sku)
   --file <path>        JSON array of { sku, quantity, format?, title? }
+  --shipment <wf>      Send to Amazon workflow id, or its confirm_content_step
+                       URL. Labels every ready-to-send SKU, one label per unit.
   --format <fmt>       ${'Override label layout, e.g. ItemLabel_Letter_30, thermal'}
   --dry-run            Download the PDFs, never send to the printer
   --headed             Force a visible browser window
   --json               Print machine-readable results (for skill use)
-  --printers           List CUPS printers and exit
+  --printers           List available printers and exit
   --help
 `;
 
@@ -82,7 +87,7 @@ async function main(): Promise<number> {
 
   if (flags.has('printers')) {
     const printers = await listPrinters();
-    console.log(printers.length ? printers.join('\n') : 'No CUPS printers found.');
+    console.log(printers.length ? printers.join('\n') : 'No printers found.');
     return 0;
   }
 
@@ -99,25 +104,55 @@ async function main(): Promise<number> {
 
     case 'print': {
       const file = flags.get('file')?.[0];
-      const requests = file ? await requestsFromFile(file) : requestsFromFlags(flags);
+      const shipment = flags.get('shipment')?.[0];
+      const format = flags.get('format')?.[0] as LabelFormat | undefined;
+      const printOptions = { dryRun: flags.has('dry-run'), headed: flags.has('headed') };
 
-      if (requests.length === 0) {
-        log.error('Nothing to print. Pass --sku/--qty or --file.');
-        console.log(USAGE);
-        return 1;
+      let results: LabelResult[];
+      if (shipment) {
+        // Reads the shipment and prints in one browser session — see
+        // printShipmentLabels() for why that matters (it used to be two
+        // separate launches).
+        results = await printShipmentLabels(shipment, { ...printOptions, ...(format ? { format } : {}) });
+      } else {
+        const requests = file ? await requestsFromFile(file) : requestsFromFlags(flags);
+        if (requests.length === 0) {
+          log.error('Nothing to print. Pass --sku/--qty, --file, or --shipment.');
+          console.log(USAGE);
+          return 1;
+        }
+        results = await printLabels(requests, printOptions);
       }
-
-      const results = await printLabels(requests, {
-        dryRun: flags.has('dry-run'),
-        headed: flags.has('headed'),
-      });
 
       if (flags.has('json')) {
         console.log(JSON.stringify(results, null, 2));
       } else {
-        for (const r of results) log.info(`${r.sku}: ${r.status}${r.message ? ` — ${r.message}` : ''}`);
+        for (const r of results) {
+          const note = r.message ?? r.unconfirmed;
+          log.info(`${r.sku}: ${r.status}${r.unconfirmed ? ' (unconfirmed)' : ''}${note ? ` — ${note}` : ''}`);
+        }
       }
-      return results.some((r) => r.status === 'failed') ? 1 : 0;
+      return results.some((r) => r.status === 'failed' || r.status === 'print-failed') ? 1 : 0;
+    }
+
+    case 'shipment': {
+      const shipment = flags.get('shipment')?.[0] ?? flags.get('wf')?.[0];
+      if (!shipment) {
+        log.error('Pass --shipment <workflow-id or confirm_content_step URL>.');
+        console.log(USAGE);
+        return 1;
+      }
+
+      const items = await readShipmentItems(shipment, { headed: flags.has('headed') });
+      if (flags.has('json')) {
+        console.log(JSON.stringify(items, null, 2));
+      } else {
+        for (const i of items) {
+          console.log(`${i.sku.padEnd(24)} ${String(i.units).padStart(6)} units${i.boxes ? `  (${i.boxes} boxes)` : ''}`);
+        }
+        console.log(`\n${items.length} SKUs, ${items.reduce((s, i) => s + i.units, 0)} units total.`);
+      }
+      return 0;
     }
 
     case 'list': {
