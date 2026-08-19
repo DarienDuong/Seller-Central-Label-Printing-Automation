@@ -1,11 +1,12 @@
 # Project context & status
 
 Handoff doc for starting a fresh Claude Code / Codex session on this repo without
-re-deriving everything. Last updated **2026-08-18** (main @ `6170d67`, which
+re-deriving everything. Last updated **2026-08-18** (main @ `ae292bd`, which
 includes PR #8 / 4B and its follow-ups from PR #13, the verified-printer doc
 pass in PR #17, the Phase 5 planning + SP-API research doc pass in PR #18, a
-cost cut to the Claude PR review workflow in PR #19, and Phase 5's
-implementation in PR #20 — all merged, see below).
+cost cut to the Claude PR review workflow in PR #19, Phase 5's implementation
+in PR #20, and a doc-accuracy follow-up marking PR #20 merged in PR #22 —
+all merged, see below).
 
 ---
 
@@ -61,7 +62,7 @@ before 4C**, per the owner's earlier call, because it adds a flag to the
 schema first would have meant reworking it immediately after. That's done
 now, so 4C is next up.
 
-`main` (`6170d67`) contains Phases 1–3, 4A, 4B (PR #8 and its follow-ups in
+`main` (`ae292bd`) contains Phases 1–3, 4A, 4B (PR #8 and its follow-ups in
 PR #13, both squash-merged — their branch history isn't preserved on `main`,
 so don't try to rebase a leftover branch onto it expecting a fast-forward;
 cherry-pick instead), and the Claude Code GitHub Actions review workflow
@@ -79,7 +80,11 @@ round). PR #20 went through the same pattern: one round of review requested
 changes (an uncaught-exception regression in the new default fetch path,
 plus three advisory nits — cross-group request pacing, a duplicated
 thermal-size default, and this file's own stale PR references), all fixed,
-then approved and merged.
+then approved and merged. PR #22 was a small follow-up fixing exactly the
+kind of staleness this paragraph is about — PR #20's own doc updates had to
+describe themselves as "not yet merged" since a PR can't report its own
+merge, and PR #22 corrected that (and, per its own review, a couple of
+other stale cross-references) once #20 actually merged.
 PR #4 ("Added my print label script in project sub-directory") — the
 stale/superseded PR from before the rewrite — is now **closed**
 (2026-08-17). Nothing further to do with it.
