@@ -216,13 +216,16 @@ call, and restores it afterward. Two cases where it doesn't get restored:
   `PRINTER_NAME` is left as the default and the run logs a warning saying
   so.
 
-This Windows-specific path hasn't yet been verified against a real Windows
-box + physical printer — the code paths were written and typechecked but
-not run live; treat the first real run as the actual test and watch it
-happen (`--dry-run` first, or watch the print job appear in the print
-queue). The macOS/CUPS path this Windows code sits alongside *has* been
-live-verified — real Seller Central data, a real dry-run PDF, and a real
-print to a physical CUPS printer, confirmed correct.
+This Windows-specific path is now live-verified: a warehouse PC (PDF
+handler: Acrobat) printed a batch of real labels correctly with no issues.
+Not yet confirmed from that run: whether the print-queue `matched` its job
+by `DocumentName` or fell back to the slower 60-second-per-copy path — both
+succeed, but a consistently slow run on that PC would be the sign to revisit
+the matching logic for Acrobat's specific `DocumentName` format (see
+docs/PROJECT_CONTEXT.md §7 for the full writeup). The macOS/CUPS path this
+Windows code sits alongside is also live-verified — real Seller Central
+data, a real dry-run PDF, and a real print to a physical CUPS printer,
+confirmed correct.
 
 ### Setting `PRINTER_NAME` on Windows
 
