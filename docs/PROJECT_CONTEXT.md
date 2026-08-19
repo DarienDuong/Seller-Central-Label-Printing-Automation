@@ -57,7 +57,10 @@ still unverified on real hardware.
 
 Sequencing 4B/4C/4D was the owner's call: shipment mode first (done), the rest
 after. Confirm with the owner before starting any of C/D. **Phase 5 landed
-before 4C** per the owner's earlier call (below) — 4C is next up.
+before 4C**, per the owner's earlier call, because it adds a flag to the
+`print` surface and 4C's MCP tool schema wraps that surface — building the
+schema first would have meant reworking it immediately after. That's done
+now, so 4C is next up.
 
 `main` (`6170d67`) contains Phases 1–3, 4A, 4B (PR #8 and its follow-ups in
 PR #13, both squash-merged — their branch history isn't preserved on `main`,
@@ -118,10 +121,9 @@ Common flags: `--dry-run` (download PDF, never print), `--headed`, `--json`,
 | `src/logger.ts` | Console logger — everything writes to stderr so `--json`'s stdout stays pure JSON |
 | `src/types.ts` | `LabelRequest`, `LabelResult`, `ShipmentItem`, `InventoryItem`, `LabelFormat` |
 
-~1,570 lines of TypeScript total on `main` (~1,140 before 4B merged); ~1,730
-on the unmerged Phase 5 branch (`InventoryPage.fetchLabelPdf()` plus the
-merge path in `printLabels.ts`). Small enough to read end to end. Phase 5
-also adds `pdf-lib` (pure JS, no native deps) as a runtime dependency.
+~1,730 lines of TypeScript total on `main` (~1,140 before 4B merged, ~1,570
+before Phase 5 merged). Small enough to read end to end. Phase 5 also adds
+`pdf-lib` (pure JS, no native deps) as a runtime dependency.
 
 ---
 
