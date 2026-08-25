@@ -23,6 +23,18 @@ name: Claude PR Review
 #     full-function-context reads entirely for docs-only or very small
 #     diffs, since those are exactly the PRs where a single careful pass
 #     already catches everything worth catching.
+#
+# FOLLOW-UP (2026-08-19): the docs-only branch of that lightweight check had
+# no size cap — "every file is .md" qualified regardless of line count. This
+# repo's docs/PROJECT_CONTEXT.md gets genuinely large rewrites (200+ lines is
+# routine), and real run data showed a 226-line docs-only diff cost $1.25,
+# essentially the same as a 341-line real src/ change ($1.29) — the
+# "lightweight" path bought nothing there because line count, not file
+# extension, is what actually drives cost. Added an ~80-line cap to the
+# docs-only branch so it stays cheap for what it's actually meant for (a
+# small doc tweak), while a large rewrite falls through to the full flow
+# instead of being miscategorized as lightweight while costing full price.
+#
 # --max-turns was also cut from 60 to 45 — plenty of headroom for the
 # consolidated flow; a wide cap mostly bought extra unnecessary exploration.
 # Revisit these if reviews start missing real bugs on larger PRs.
@@ -139,12 +151,15 @@ jobs:
 
             Steps:
             0. `gh pr diff ${{ github.event.pull_request.number }} --stat` to size the diff up first.
-               If every changed file is `*.md`/`*.txt` (docs-only), OR the diff touches only
-               non-`src`/non-config files with fewer than ~20 total changed lines, this is a
-               lightweight PR: skip steps 2-3's full-context reads and angle breakdown. Instead do one
-               careful pass over `gh pr diff` covering the same categories of problem (a wrong claim or
-               inconsistency in docs, a real correctness/security issue if source did change, an
-               explicit CLAUDE.md violation), then go straight to step 5. If the diff is bigger than
+               If (every changed file is `*.md`/`*.txt` (docs-only) AND the diff is under ~80 total
+               changed lines) OR (the diff touches only non-`src`/non-config files with fewer than ~20
+               total changed lines), this is a lightweight PR: skip steps 2-3's full-context reads and
+               angle breakdown. Instead do one careful pass over `gh pr diff` covering the same
+               categories of problem (a wrong claim or inconsistency in docs, a real correctness/security
+               issue if source did change, an explicit CLAUDE.md violation), then go straight to step 5.
+               The docs-only branch has its own cap, not a free pass on size — a 200+ line rewrite of
+               `docs/PROJECT_CONTEXT.md` is not lightweight just because the extension is `.md`; treat it
+               as the full flow below. If the diff is bigger than
                that, or touches `src/`, continue with the full flow below.
             1. `gh pr diff ${{ github.event.pull_request.number }}` to see the full diff.
             2. Read the CLAUDE.md file(s) that apply to the changed files (repo root plus any ancestor
