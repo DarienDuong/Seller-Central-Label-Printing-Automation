@@ -303,6 +303,7 @@ npm run list -- --search "coffee"
 | [src/tasks/printLabels.ts](src/tasks/printLabels.ts) | Batch flow: group by format → fetch each SKU's PDF and merge with `pdf-lib` (default), or one print-labels page load per group (`--combine`) → save |
 | [src/tasks/shipmentLabels.ts](src/tasks/shipmentLabels.ts) | Turns a shipment workflow into label requests |
 | [src/printer.ts](src/printer.ts) | Printer handoff — CUPS `lp` on macOS/Linux, PowerShell/Win32_Printer on Windows |
+| [src/mcp/](src/mcp/) | MCP server — see [MCP server](#mcp-server) below |
 
 ## How it works
 
@@ -401,6 +402,39 @@ To re-verify after a UI change:
 ```bash
 BROWSER_MODE=headed SLOW_MO=400 npm run print -- --sku YOUR-SKU --qty 1 --dry-run
 ```
+
+## MCP server
+
+Exposes this project as MCP tools so an AI client (Claude Code, Claude
+Desktop, Codex CLI) can call it directly, over the same saved session
+`npm run login` already set up — no separate credentials.
+
+```bash
+npm run build            # compiles src/mcp/server.ts (and the rest of src/) to dist/
+```
+
+Then point your client at the compiled entry point (not `npm run mcp` —
+npm's own console output would corrupt the stdio JSON-RPC channel):
+
+```bash
+claude mcp add seller-central-labels -- node /absolute/path/to/repo/dist/mcp/server.js
+```
+
+Seven tools: `check_session`, `list_inventory`, `download_labels`,
+`print_labels`, `download_shipment_labels`, `print_shipment_labels`,
+`list_printers`. `download_*`/`print_*` are deliberately separate tools
+rather than one tool with a `dryRun` flag — the model picks the tool that
+matches the physical side effect it intends (spooling real paper vs. just
+saving a PDF to `output/`) instead of a boolean it could get wrong.
+`check_session` reports whether `.auth/seller-central.json` is still valid;
+if not, run `npm run login` yourself — the server never signs in on your
+behalf.
+
+**Not yet live-verified against a real account** — typechecked, built, and
+smoke-tested over raw stdio JSON-RPC (`tools/list`/`tools/call` return
+correct schemas and results with a clean stdout), but the browser-driving
+tools haven't been run against Seller Central yet, and no client has
+registered it for a real call. See docs/PROJECT_CONTEXT.md §7 (4C).
 
 ## Notes
 

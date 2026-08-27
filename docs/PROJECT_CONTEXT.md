@@ -51,7 +51,7 @@ macOS/CUPS and Windows paths are now both live-verified — see §7.
 | 1–3 | login, print by SKU, `--file` batches, `list` inventory | ✅ done, live-verified |
 | 4A | **shipment mode** (`--shipment`) | ✅ done, merged in PR #6 |
 | 4B | **Windows printing support** | ✅ done, merged (PR #8 + follow-ups in PR #13); macOS/CUPS and Windows both live-verified — see §7 |
-| 4C | **MCP server** | ⬜ not started |
+| 4C | **MCP server** | 🟡 implemented, typechecked, stdio transport smoke-tested — not yet live-verified against a real account (see §7) |
 | 4D | **teammate onboarding docs** | ⬜ not started |
 | 5 | **one sheet per SKU by default** (`--combine` opts back into today's behavior) | ✅ done, merged in PR #20 (2026-08-18), live-verified — see §7 |
 
@@ -124,6 +124,12 @@ Common flags: `--dry-run` (download PDF, never print), `--headed`, `--json`,
 | `src/printer.ts` | Printer handoff — CUPS `lp`/`lpstat` on macOS/Linux, PowerShell/`Win32_Printer` on Windows (4B, merged in PR #8, follow-ups in PR #13) |
 | `src/logger.ts` | Console logger — everything writes to stderr so `--json`'s stdout stays pure JSON |
 | `src/types.ts` | `LabelRequest`, `LabelResult`, `ShipmentItem`, `InventoryItem`, `LabelFormat` |
+| `src/mcp/server.ts` | 4C MCP entry point — registers all seven tools, connects the stdio transport |
+| `src/mcp/loadEnv.ts` | Loads `.env` from an absolute path before `config.ts`'s own `dotenv/config` import runs — see §7 (4C) |
+| `src/mcp/schemas.ts` | zod schemas mirroring `LabelFormat`/`LabelRequest` from `types.ts` |
+| `src/mcp/sessionLock.ts` | Serializes every session-holding tool call so two calls can't race `storageState` writes |
+| `src/mcp/toolResult.ts` | `jsonResult`/`errorResult` — shared MCP `CallToolResult` formatting |
+| `src/mcp/tools/*.ts` | One thin registration file per tool (`check_session`, `list_inventory`, `download_labels`, `print_labels`, `download_shipment_labels`, `print_shipment_labels`, `list_printers`), plus `labelTool.ts`/`shipmentLabelTool.ts` factoring the shared download/print wiring |
 
 ~1,730 lines of TypeScript total on `main` (~1,140 before 4B merged, ~1,570
 before Phase 5 merged). Small enough to read end to end. Phase 5 also adds
@@ -365,62 +371,74 @@ successfully (see above) — 4B is done.
 
 Still open: setup docs need `nvm-windows` notes — it ignores `.nvmrc`.
 
-**4C — MCP server.** Planned (2026-08-27), not yet built. stdio transport —
-the host (Claude Code, Claude Desktop, Codex CLI) spawns the server as a
-child process and talks JSON-RPC over its stdin/stdout; no port, HTTPS, or
-tunnel involved. Tools only, no MCP resources/prompts — the inventory is far
-too large to dump as context, and every workflow here is an action, not a
-templated prompt. A *remote* HTTPS server would be needed for ChatGPT
-connectors/apps, and GPT Actions is a separate non-MCP protocol — out of
-scope unless asked.
+**4C — MCP server.** Implemented (2026-08-27, branch
+`claude/4c-file-layout-schema-w0at5g`), typechecked and build-verified;
+**not yet live-verified against a real Seller Central account** (see
+"What's not yet verified" below). stdio transport — the host (Claude Code,
+Claude Desktop, Codex CLI) spawns the server as a child process and talks
+JSON-RPC over its stdin/stdout; no port, HTTPS, or tunnel involved. Tools
+only, no MCP resources/prompts — the inventory is far too large to dump as
+context, and every workflow here is an action, not a templated prompt. A
+*remote* HTTPS server would be needed for ChatGPT connectors/apps, and GPT
+Actions is a separate non-MCP protocol — out of scope unless asked.
 
-*File layout.*
+*File layout, as built.*
 
 ```
 src/mcp/
-  server.ts                    — entry point: build the MCP server, register tools, connect stdio transport
+  server.ts                    — entry point: build the MCP server, register all 7 tools, connect stdio transport
+  loadEnv.ts                   — loads .env from an absolute path; imported first in server.ts, before config.ts runs
   schemas.ts                   — zod schemas mirroring LabelFormat/LabelRequest from src/types.ts
+  sessionLock.ts               — withSessionLock(): serializes session-holding tool calls
+  toolResult.ts                — jsonResult()/errorResult(): shared CallToolResult formatting
   tools/
     checkSession.ts            — check_session
     listInventory.ts           — list_inventory
-    downloadLabels.ts          — download_labels
-    printLabels.ts             — print_labels
-    downloadShipmentLabels.ts  — download_shipment_labels
-    printShipmentLabels.ts     — print_shipment_labels
+    downloadLabels.ts          — download_labels     ┐ both thin wrappers around
+    printLabels.ts             — print_labels        ┘ labelTool.ts's registerLabelTool()
+    downloadShipmentLabels.ts  — download_shipment_labels     ┐ both thin wrappers around
+    printShipmentLabels.ts     — print_shipment_labels        ┘ shipmentLabelTool.ts's registerShipmentLabelTool()
     listPrinters.ts            — list_printers
+    labelTool.ts                — shared registerLabelTool() factory (not itself a tool)
+    shipmentLabelTool.ts        — shared registerShipmentLabelTool() factory (not itself a tool)
 ```
 
-Each `tools/*.ts` wraps an existing function from `src/tasks/*`, `src/pages/*`,
-`src/auth.ts`, or `src/printer.ts` — the MCP layer is a thin adapter over
-already-verified Playwright logic, not a rewrite. `schemas.ts` exists because
-`LabelFormat` is a plain TS union with no runtime representation; the zod
-enum needs the same string values duplicated, so that duplication lives in
-one place with a comment pointing at `types.ts`, rather than being
-re-declared per tool file.
+`labelTool.ts`/`shipmentLabelTool.ts` exist so `download_labels`/`print_labels`
+(and their shipment equivalents) share one call into
+`printLabels()`/`printShipmentLabels()` with only `dryRun` differing —
+avoiding the duplicated-logic risk the original plan flagged, without
+needing a tool-per-file split to also mean a handler-per-file split. Every
+other `tools/*.ts` wraps an existing function from `src/tasks/*`,
+`src/pages/*`, `src/auth.ts`, or `src/printer.ts` directly — the MCP layer is
+a thin adapter over already-verified Playwright logic, not a rewrite.
+`schemas.ts` exists because `LabelFormat` is a plain TS union with no runtime
+representation; the zod enum needs the same string values duplicated, so
+that duplication lives in one place with a comment pointing at `types.ts`,
+rather than being re-declared per tool file.
 
-New dependencies: `@modelcontextprotocol/sdk`, `zod`. New `package.json`
-scripts: `build` (`tsc` to `dist/`) and `mcp` (for local testing only —
-`tsx src/mcp/server.ts`). Host configs point at `node
-/path/to/repo/dist/mcp/server.js` directly, **not** `npm run mcp` or
-`node --loader tsx`: launching through `npm run` risks npm's own banner
-landing on stdout, which is the JSON-RPC channel on stdio transport — same
-class of bug logger.ts already had to avoid (see below) — and a compiled
-entry point also skips `tsx`'s per-spawn startup cost, which matters more
-here since a host may respawn the server per session.
+New dependencies: `@modelcontextprotocol/sdk@^1.30.0`, `zod@^4.4.3`. New
+`package.json` scripts: `build` (`tsc -p tsconfig.build.json` → `dist/`,
+since the existing `tsconfig.json` is `noEmit: true` for `typecheck`) and
+`mcp` (`tsx src/mcp/server.ts`, for local dev only). Host configs should
+point at `node /path/to/repo/dist/mcp/server.js` directly, **not**
+`npm run mcp`: launching through `npm run` risks npm's own banner landing on
+stdout, which is the JSON-RPC channel on stdio transport, and a compiled
+entry point skips `tsx`'s per-spawn startup cost, which matters more here
+since a host may respawn the server per session.
 
 *Tool surface* — seven tools, `download_*`/`print_*` split per-action rather
 than a `dryRun` boolean, so the model sees the physical side effect (spooling
 real paper) as its own named tool instead of a flag it might get wrong. Both
 map to the same underlying `printLabels()`/`printShipmentLabels()` with
-`dryRun` set internally — no duplicated logic.
+`dryRun` fixed per tool — no duplicated logic (see `labelTool.ts` above).
 
 | Tool | Wraps | Notes |
 | --- | --- | --- |
-| `check_session` | `isSignedIn()` via a lightweight `launchSession()`/close (no save) | Tells the caller to run `npm run login` on failure instead of failing cryptically. Smallest possible tool — first one implemented, to prove the transport end-to-end via MCP Inspector before any browser automation is on the line. |
+| `check_session` | `isSignedIn()` via a lightweight `launchSession()`/close (no save) | Tells the caller to run `npm run login` on failure instead of failing cryptically. |
 | `list_inventory` | `InventoryPage.open()/search()/listVisible()` | Read-only, safe to iterate on. |
 | `download_labels` | `printLabels()`, `dryRun: true` | `requests: LabelRequest[]`, `combine?`, `format?` in; `LabelResult[]` out, same shape the CLI's `--json` already emits. |
 | `print_labels` | `printLabels()`, `dryRun: false` | Same schema as `download_labels`. |
-| `download_shipment_labels` | `printShipmentLabels()`, `dryRun: true` | `shipment: string` (workflow id or URL), `combine?`, `format?`. Already-verified 4A/Phase-5 code underneath — no reason to sequence this after the non-shipment tools. |
+| `download_shipment_labels` | `printShipmentLabels()`, `dryRun: true` | `shipment: string` (workflow id or URL), `combine?`, `format?`. Already-verified 4A/Phase-5 code underneath. |
 | `print_shipment_labels` | `printShipmentLabels()`, `dryRun: false` | Same schema. |
 | `list_printers` | `listPrinters()` | No input. |
 
@@ -433,41 +451,50 @@ minutes on a browser window is bad design anyway. `check_session` plus
 driven by `.env`'s `BROWSER_MODE`, since an MCP caller has no meaningful
 notion of "visible window."
 
-*Two things worth checking before/while building, not proven broken yet:*
-- `src/logger.ts` already routes every level (`info`/`step`/`warn`/`error`/
-  `done`) to `console.error` (fixed in 4B, PR #13) — the earlier concern that
-  it writes to stdout is stale. The only stdout write in the codebase is
-  `cli.ts`'s explicit `console.log(JSON.stringify(...))` for `--json`, and
-  that call site has no equivalent in the MCP path — tool handlers return
-  results as MCP response payloads. Nothing to fix here.
-- `config.ts` derives every path (`storageStatePath`, `outputDir`) from
-  `ROOT = resolve(import.meta.dirname, '..')` — already cwd-independent.
-  The one piece that isn't: `import 'dotenv/config'` reads `.env` relative to
-  `process.cwd()`, which *would* silently no-op if a host ever spawns the
-  server from a different working directory. Worth a defensive one-line swap
-  to `dotenv.config({ path: resolve(import.meta.dirname, '../.env') })`
-  inside `server.ts`'s own startup, not a prerequisite fix to `config.ts`
-  itself.
+*The two things flagged as "worth checking" while scoping, resolved:*
+- `src/logger.ts` was already stderr-only (fixed in 4B, PR #13) — confirmed
+  by the stdio smoke test below, which showed a real `log.warn()` call
+  landing on stderr while stdout stayed clean JSON-RPC. Nothing changed here.
+- `config.ts`'s bare `import 'dotenv/config'` still reads `.env` relative to
+  `process.cwd()`. Fixed with `src/mcp/loadEnv.ts`, imported as the *first*
+  line of `server.ts` (ESM evaluates top-level imports in source order, so
+  this runs before anything that transitively imports `config.ts`): it calls
+  `dotenv.config({ path: resolve(import.meta.dirname, '../../.env') })` with
+  an absolute path. dotenv doesn't overwrite already-set env vars, so
+  `config.ts`'s later bare import becomes a no-op once this has already run.
 
-*Concurrency.* Two simultaneous tool calls would each `launchSession()`
-against the same `storageStatePath` and both write it back on close — a real
-race, not a theoretical one. `server.ts` needs a simple in-process
-queue/mutex around every session-holding tool call so runs serialize, same
-as the CLI's one-command-at-a-time model already guarantees for free.
+*Concurrency.* `src/mcp/sessionLock.ts` exports `withSessionLock()`, a
+promise-chain mutex. Every tool handler that calls `launchSession()` routes
+through it, so two overlapping tool calls serialize instead of racing
+`storageState` writes or running two Chromium instances against one saved
+session at once. `list_printers` doesn't touch a session, so it skips the
+lock — nothing to serialize.
 
-*Session lifecycle.* v1: one `launchSession()`/`close({ save: true })` per
-tool call, matching how `cli.ts` already does it per-command. Holding a
-browser warm across calls in the long-lived MCP server process is a possible
-later optimization, not needed for a first cut.
+*Session lifecycle.* v1, as built: one `launchSession()`/`close({ save:
+true })` (or no-save for the read-only `check_session`) per tool call,
+matching how `cli.ts` already does it per-command. Holding a browser warm
+across calls in the long-lived MCP server process is a possible later
+optimization, not needed for a first cut.
 
-*Build order:* `check_session` → `list_inventory` → `download_labels` →
-`print_labels` → `download_shipment_labels`/`print_shipment_labels` →
-`list_printers`, each verified via MCP Inspector, then end-to-end in both
-Claude Code and Codex against the live account (same "verify the real
-artifact" bar as everything else in this repo — see §8).
+*Verified so far:* `npm run typecheck` and `npm run build` both pass clean.
+A manual stdio smoke test (spawn `dist/mcp/server.js`, send raw
+`initialize`/`tools/list`/`tools/call` JSON-RPC over its stdin) confirmed:
+all seven tools register with correct names/schemas, `tools/call` on
+`list_printers` returns valid `CallToolResult` JSON on stdout with a real
+`log.warn` diagnostic landing on stderr instead (no `lpstat` in this
+container, so an empty list back is the correct result), and nothing else
+appears on stdout at any point.
 
-Registration once built: `claude mcp add` for Claude Code, a block in
-`~/.codex/config.toml` for Codex, both pointing at the same compiled
+*What's not yet verified* — the actual point of the exercise, so this isn't
+done until it happens: every browser-driving tool (`check_session`,
+`list_inventory`, `download_labels`/`print_labels`,
+`download_shipment_labels`/`print_shipment_labels`) against a live account,
+and registration + a real tool call from both Claude Code and Codex CLI
+(not just a hand-rolled JSON-RPC probe). Same "verify the real artifact" bar
+as everything else in this repo — see §8.
+
+Registration once live-verified: `claude mcp add` for Claude Code, a block
+in `~/.codex/config.toml` for Codex, both pointing at the same compiled
 `dist/mcp/server.js`. Distribution is clone-first, matching every other
 per-teammate step already in this repo (`npm run login` is already
 per-machine, non-copyable) — no npm publishing, no release process. Detailed
