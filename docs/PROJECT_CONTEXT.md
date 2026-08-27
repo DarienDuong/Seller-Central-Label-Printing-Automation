@@ -1,12 +1,14 @@
 # Project context & status
 
 Handoff doc for starting a fresh Claude Code / Codex session on this repo without
-re-deriving everything. Last updated **2026-08-18** (main @ `ae292bd`, which
+re-deriving everything. Last updated **2026-08-27** (main @ `1c92933`, which
 includes PR #8 / 4B and its follow-ups from PR #13, the verified-printer doc
 pass in PR #17, the Phase 5 planning + SP-API research doc pass in PR #18, a
 cost cut to the Claude PR review workflow in PR #19, Phase 5's implementation
-in PR #20, and a doc-accuracy follow-up marking PR #20 merged in PR #22 —
-all merged, see below).
+in PR #20, a doc-accuracy follow-up marking PR #20 merged in PR #22, marking
+Windows printing live-verified in PR #23, and a lightweight-review size cap
+in PR #24 — all merged; PR #25 (4C MCP server, branch
+`claude/4c-file-layout-schema-w0at5g`) is open, see below).
 
 ---
 
@@ -51,7 +53,7 @@ macOS/CUPS and Windows paths are now both live-verified — see §7.
 | 1–3 | login, print by SKU, `--file` batches, `list` inventory | ✅ done, live-verified |
 | 4A | **shipment mode** (`--shipment`) | ✅ done, merged in PR #6 |
 | 4B | **Windows printing support** | ✅ done, merged (PR #8 + follow-ups in PR #13); macOS/CUPS and Windows both live-verified — see §7 |
-| 4C | **MCP server** | ⬜ not started |
+| 4C | **MCP server** | 🟡 implemented, typechecked, stdio smoke-tested, and read/download path live-verified — `print_*`/`download_shipment_labels` and real client registration still open (see §7) |
 | 4D | **teammate onboarding docs** | ⬜ not started |
 | 5 | **one sheet per SKU by default** (`--combine` opts back into today's behavior) | ✅ done, merged in PR #20 (2026-08-18), live-verified — see §7 |
 
@@ -124,6 +126,12 @@ Common flags: `--dry-run` (download PDF, never print), `--headed`, `--json`,
 | `src/printer.ts` | Printer handoff — CUPS `lp`/`lpstat` on macOS/Linux, PowerShell/`Win32_Printer` on Windows (4B, merged in PR #8, follow-ups in PR #13) |
 | `src/logger.ts` | Console logger — everything writes to stderr so `--json`'s stdout stays pure JSON |
 | `src/types.ts` | `LabelRequest`, `LabelResult`, `ShipmentItem`, `InventoryItem`, `LabelFormat` |
+| `src/mcp/server.ts` | 4C MCP entry point — registers all seven tools, connects the stdio transport |
+| `src/mcp/loadEnv.ts` | Loads `.env` from an absolute path before `config.ts`'s own `dotenv/config` import runs — see §7 (4C) |
+| `src/mcp/schemas.ts` | zod schemas mirroring `LabelFormat`/`LabelRequest` from `types.ts` |
+| `src/mcp/sessionLock.ts` | Serializes every session-holding tool call so two calls can't race `storageState` writes |
+| `src/mcp/toolResult.ts` | `jsonResult`/`errorResult` — shared MCP `CallToolResult` formatting |
+| `src/mcp/tools/*.ts` | One thin registration file per tool (`check_session`, `list_inventory`, `download_labels`, `print_labels`, `download_shipment_labels`, `print_shipment_labels`, `list_printers`), plus `labelTool.ts`/`shipmentLabelTool.ts` factoring the shared download/print wiring |
 
 ~1,730 lines of TypeScript total on `main` (~1,140 before 4B merged, ~1,570
 before Phase 5 merged). Small enough to read end to end. Phase 5 also adds
@@ -365,12 +373,137 @@ successfully (see above) — 4B is done.
 
 Still open: setup docs need `nvm-windows` notes — it ignores `.nvmrc`.
 
-**4C — MCP server.** Expose `print_labels`, `list_inventory`,
-`print_shipment_labels`, and a session-status check. stdio transport is the
-right call for the stated hosts (Claude Code, Claude Desktop, Codex CLI).
-Registration: `claude mcp add` for Claude Code, `config.toml` for Codex.
-Note: a *remote* HTTPS server would be needed for ChatGPT connectors/apps, and
-GPT Actions is a separate non-MCP protocol — out of scope unless asked.
+**4C — MCP server.** Implemented (2026-08-27, branch
+`claude/4c-file-layout-schema-w0at5g`), typechecked and build-verified;
+**the read/download path is live-verified against a real Seller Central
+account, the print path is not yet** (see "What's not yet verified"
+below). stdio transport — the host (Claude Code,
+Claude Desktop, Codex CLI) spawns the server as a child process and talks
+JSON-RPC over its stdin/stdout; no port, HTTPS, or tunnel involved. Tools
+only, no MCP resources/prompts — the inventory is far too large to dump as
+context, and every workflow here is an action, not a templated prompt. A
+*remote* HTTPS server would be needed for ChatGPT connectors/apps, and GPT
+Actions is a separate non-MCP protocol — out of scope unless asked.
+
+*File layout, as built.*
+
+```
+src/mcp/
+  server.ts                    — entry point: build the MCP server, register all 7 tools, connect stdio transport
+  loadEnv.ts                   — loads .env from an absolute path; imported first in server.ts, before config.ts runs
+  schemas.ts                   — zod schemas mirroring LabelFormat/LabelRequest from src/types.ts
+  sessionLock.ts               — withSessionLock(): serializes session-holding tool calls
+  toolResult.ts                — jsonResult()/errorResult(): shared CallToolResult formatting
+  tools/
+    checkSession.ts            — check_session
+    listInventory.ts           — list_inventory
+    downloadLabels.ts          — download_labels     ┐ both thin wrappers around
+    printLabels.ts             — print_labels        ┘ labelTool.ts's registerLabelTool()
+    downloadShipmentLabels.ts  — download_shipment_labels     ┐ both thin wrappers around
+    printShipmentLabels.ts     — print_shipment_labels        ┘ shipmentLabelTool.ts's registerShipmentLabelTool()
+    listPrinters.ts            — list_printers
+    labelTool.ts                — shared registerLabelTool() factory (not itself a tool)
+    shipmentLabelTool.ts        — shared registerShipmentLabelTool() factory (not itself a tool)
+```
+
+`labelTool.ts`/`shipmentLabelTool.ts` exist so `download_labels`/`print_labels`
+(and their shipment equivalents) share one call into
+`printLabels()`/`printShipmentLabels()` with only `dryRun` differing —
+avoiding the duplicated-logic risk the original plan flagged, without
+needing a tool-per-file split to also mean a handler-per-file split. Every
+other `tools/*.ts` wraps an existing function from `src/tasks/*`,
+`src/pages/*`, `src/auth.ts`, or `src/printer.ts` directly — the MCP layer is
+a thin adapter over already-verified Playwright logic, not a rewrite.
+`schemas.ts` exists because `LabelFormat` is a plain TS union with no runtime
+representation; the zod enum needs the same string values duplicated, so
+that duplication lives in one place with a comment pointing at `types.ts`,
+rather than being re-declared per tool file.
+
+New dependencies: `@modelcontextprotocol/sdk@^1.30.0`, `zod@^4.4.3`. New
+`package.json` scripts: `build` (`tsc -p tsconfig.build.json` → `dist/`,
+since the existing `tsconfig.json` is `noEmit: true` for `typecheck`) and
+`mcp` (`tsx src/mcp/server.ts`, for local dev only). Host configs should
+point at `node /path/to/repo/dist/mcp/server.js` directly, **not**
+`npm run mcp`: launching through `npm run` risks npm's own banner landing on
+stdout, which is the JSON-RPC channel on stdio transport, and a compiled
+entry point skips `tsx`'s per-spawn startup cost, which matters more here
+since a host may respawn the server per session.
+
+*Tool surface* — seven tools, `download_*`/`print_*` split per-action rather
+than a `dryRun` boolean, so the model sees the physical side effect (spooling
+real paper) as its own named tool instead of a flag it might get wrong. Both
+map to the same underlying `printLabels()`/`printShipmentLabels()` with
+`dryRun` fixed per tool — no duplicated logic (see `labelTool.ts` above).
+
+| Tool | Wraps | Notes |
+| --- | --- | --- |
+| `check_session` | `isSignedIn()` via a lightweight `launchSession()`/close (no save) | Tells the caller to run `npm run login` on failure instead of failing cryptically. |
+| `list_inventory` | `InventoryPage.open()/search()/listVisible()` | Read-only, safe to iterate on. |
+| `download_labels` | `printLabels()`, `dryRun: true` | `requests: LabelRequest[]`, `combine?`, `format?` in; `LabelResult[]` out, same shape the CLI's `--json` already emits. |
+| `print_labels` | `printLabels()`, `dryRun: false` | Same schema as `download_labels`. |
+| `download_shipment_labels` | `printShipmentLabels()`, `dryRun: true` | `shipment: string` (workflow id or URL), `combine?`, `format?`. Already-verified 4A/Phase-5 code underneath. |
+| `print_shipment_labels` | `printShipmentLabels()`, `dryRun: false` | Same schema. |
+| `list_printers` | `listPrinters()` | No input. |
+
+`login` is deliberately **not** a tool — it's interactive by design (a human
+types the password and does 2FA per §6), and a tool call that blocks for
+minutes on a browser window is bad design anyway. `check_session` plus
+"go run this command" is the right boundary.
+
+`headed` is not exposed as a tool parameter on any of these — it stays
+driven by `.env`'s `BROWSER_MODE`, since an MCP caller has no meaningful
+notion of "visible window."
+
+*The two things flagged as "worth checking" while scoping, resolved:*
+- `src/logger.ts` was already stderr-only (fixed in 4B, PR #13) — confirmed
+  by the stdio smoke test below, which showed a real `log.warn()` call
+  landing on stderr while stdout stayed clean JSON-RPC. Nothing changed here.
+- `config.ts`'s bare `import 'dotenv/config'` still reads `.env` relative to
+  `process.cwd()`. Fixed with `src/mcp/loadEnv.ts`, imported as the *first*
+  line of `server.ts` (ESM evaluates top-level imports in source order, so
+  this runs before anything that transitively imports `config.ts`): it calls
+  `dotenv.config({ path: resolve(import.meta.dirname, '../../.env') })` with
+  an absolute path. dotenv doesn't overwrite already-set env vars, so
+  `config.ts`'s later bare import becomes a no-op once this has already run.
+
+*Concurrency.* `src/mcp/sessionLock.ts` exports `withSessionLock()`, a
+promise-chain mutex. Every tool handler that calls `launchSession()` routes
+through it, so two overlapping tool calls serialize instead of racing
+`storageState` writes or running two Chromium instances against one saved
+session at once. `list_printers` doesn't touch a session, so it skips the
+lock — nothing to serialize.
+
+*Session lifecycle.* v1, as built: one `launchSession()`/`close({ save:
+true })` (or no-save for the read-only `check_session`) per tool call,
+matching how `cli.ts` already does it per-command. Holding a browser warm
+across calls in the long-lived MCP server process is a possible later
+optimization, not needed for a first cut.
+
+*Verified so far:* `npm run typecheck` and `npm run build` both pass clean.
+A manual stdio smoke test (spawn `dist/mcp/server.js`, send raw
+`initialize`/`tools/list`/`tools/call` JSON-RPC over its stdin) confirmed
+all seven tools register with correct names/schemas and nothing but JSON-RPC
+appears on stdout. Beyond the smoke test, three tools were then run for
+real against the live account (2026-08-27, same hand-rolled JSON-RPC
+driver): `check_session` returned `signedIn: true`; `list_inventory` with
+no search text returned the real unfiltered grid (SKU/ASIN/title/available
+rows matching Seller Central); `download_labels` for one real SKU
+(`YJ-B42Y-0VY3`, qty 2) wrote a PDF that was opened and checked directly —
+correct FNSKU, correct title, 2 labels, 1 page.
+
+*What's not yet verified* — the actual point of the exercise, so this isn't
+done until it happens: `print_labels`/`print_shipment_labels` actually
+spooling to a physical printer, `download_shipment_labels` against a live
+shipment, and registration + a real tool call from both Claude Code and
+Codex CLI's own config (not just a hand-rolled JSON-RPC probe). Same
+"verify the real artifact" bar as everything else in this repo — see §8.
+
+Registration once live-verified: `claude mcp add` for Claude Code, a block
+in `~/.codex/config.toml` for Codex, both pointing at the same compiled
+`dist/mcp/server.js`. Distribution is clone-first, matching every other
+per-teammate step already in this repo (`npm run login` is already
+per-machine, non-copyable) — no npm publishing, no release process. Detailed
+per-OS registration steps belong in 4D, not here.
 
 **4D — onboarding docs.** repo access → install → `.env` → their own
 `npm run login` → MCP registration, with per-OS notes.

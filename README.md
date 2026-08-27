@@ -303,6 +303,7 @@ npm run list -- --search "coffee"
 | [src/tasks/printLabels.ts](src/tasks/printLabels.ts) | Batch flow: group by format → fetch each SKU's PDF and merge with `pdf-lib` (default), or one print-labels page load per group (`--combine`) → save |
 | [src/tasks/shipmentLabels.ts](src/tasks/shipmentLabels.ts) | Turns a shipment workflow into label requests |
 | [src/printer.ts](src/printer.ts) | Printer handoff — CUPS `lp` on macOS/Linux, PowerShell/Win32_Printer on Windows |
+| [src/mcp/](src/mcp/) | MCP server — see [MCP server](#mcp-server) below |
 
 ## How it works
 
@@ -401,6 +402,43 @@ To re-verify after a UI change:
 ```bash
 BROWSER_MODE=headed SLOW_MO=400 npm run print -- --sku YOUR-SKU --qty 1 --dry-run
 ```
+
+## MCP server
+
+Exposes this project as MCP tools so an AI client (Claude Code, Claude
+Desktop, Codex CLI) can call it directly, over the same saved session
+`npm run login` already set up — no separate credentials.
+
+```bash
+npm run build            # compiles src/mcp/server.ts (and the rest of src/) to dist/
+```
+
+Then point your client at the compiled entry point (not `npm run mcp` —
+npm's own console output would corrupt the stdio JSON-RPC channel):
+
+```bash
+claude mcp add seller-central-labels -- node /absolute/path/to/repo/dist/mcp/server.js
+```
+
+Seven tools: `check_session`, `list_inventory`, `download_labels`,
+`print_labels`, `download_shipment_labels`, `print_shipment_labels`,
+`list_printers`. `download_*`/`print_*` are deliberately separate tools
+rather than one tool with a `dryRun` flag — the model picks the tool that
+matches the physical side effect it intends (spooling real paper vs. just
+saving a PDF to `output/`) instead of a boolean it could get wrong.
+`check_session` reports whether `.auth/seller-central.json` is still valid;
+if not, run `npm run login` yourself — the server never signs in on your
+behalf.
+
+**Live-verified against a real account** (2026-08-27) for the read/download
+path: `check_session`, `list_inventory`, and a `download_labels` dry run all
+ran against Seller Central over raw stdio JSON-RPC and produced correct
+results — the downloaded PDF was opened and checked (right FNSKU, right
+title, right label count), not just "no error thrown". **Still
+unverified:** an actual `print_labels`/`print_shipment_labels` call that
+spools real paper, `download_shipment_labels`, and registration with an
+actual Claude Code/Codex client config (this was a hand-rolled JSON-RPC
+probe, not a client). See docs/PROJECT_CONTEXT.md §7 (4C).
 
 ## Notes
 

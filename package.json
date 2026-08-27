@@ -12,13 +12,17 @@
     "print": "tsx src/cli.ts print",
     "list": "tsx src/cli.ts list",
     "shipment": "tsx src/cli.ts shipment",
+    "mcp": "tsx src/mcp/server.ts",
     "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
     "postinstall": "playwright install chromium"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "dotenv": "^16.4.5",
     "pdf-lib": "^1.17.1",
-    "playwright": "^1.49.0"
+    "playwright": "^1.49.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
