@@ -39,6 +39,19 @@ name: Claude PR Review
 # consolidated flow; a wide cap mostly bought extra unnecessary exploration.
 # Revisit these if reviews start missing real bugs on larger PRs.
 #
+# FOLLOW-UP (2026-08-27): 45 wasn't enough. PR #25 (20 files, ~1700 lines —
+# a genuinely large PR, not a case the lightweight path was ever meant to
+# catch) hit `error_max_turns` at 46 turns and posted nothing at all: no
+# comments, no verdict, just a silently failed check, which is a worse
+# outcome than a review that's merely expensive. 12 of those 46 turns were
+# also spent on permission-denied tool calls (something it kept trying that
+# isn't in `--allowedTools`) — a separate problem worth its own fix, but not
+# addressed here. Raised to 90. This is a ceiling, not a target: it only
+# costs more when a review genuinely needs more turns, so small/medium PRs
+# that already finish well under 45 aren't affected. Revisit downward if
+# real run data shows this papering over a prompt that should converge
+# faster instead of actually needing the room on large diffs.
+#
 # Ends every run with a real GitHub review verdict (APPROVE or
 # REQUEST_CHANGES via the reviews API `event` field), not just a comment —
 # the standard mechanism a PR bot is expected to use, and the one thing that
@@ -136,7 +149,7 @@ jobs:
           # prompt. Read/Grep/Glob to read the code, Write to build the payload.
           claude_args: >-
             --model claude-sonnet-5
-            --max-turns 45
+            --max-turns 90
             --allowedTools "Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Bash(gh api:*),Read,Grep,Glob,Write"
           prompt: |
             Review pull request #${{ github.event.pull_request.number }} in ${{ github.repository }}.
