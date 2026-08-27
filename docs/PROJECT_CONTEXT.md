@@ -1,12 +1,14 @@
 # Project context & status
 
 Handoff doc for starting a fresh Claude Code / Codex session on this repo without
-re-deriving everything. Last updated **2026-08-18** (main @ `ae292bd`, which
+re-deriving everything. Last updated **2026-08-27** (main @ `1c92933`, which
 includes PR #8 / 4B and its follow-ups from PR #13, the verified-printer doc
 pass in PR #17, the Phase 5 planning + SP-API research doc pass in PR #18, a
 cost cut to the Claude PR review workflow in PR #19, Phase 5's implementation
-in PR #20, and a doc-accuracy follow-up marking PR #20 merged in PR #22 —
-all merged, see below).
+in PR #20, a doc-accuracy follow-up marking PR #20 merged in PR #22, marking
+Windows printing live-verified in PR #23, and a lightweight-review size cap
+in PR #24 — all merged; PR #25 (4C MCP server, branch
+`claude/4c-file-layout-schema-w0at5g`) is open, see below).
 
 ---
 
@@ -51,7 +53,7 @@ macOS/CUPS and Windows paths are now both live-verified — see §7.
 | 1–3 | login, print by SKU, `--file` batches, `list` inventory | ✅ done, live-verified |
 | 4A | **shipment mode** (`--shipment`) | ✅ done, merged in PR #6 |
 | 4B | **Windows printing support** | ✅ done, merged (PR #8 + follow-ups in PR #13); macOS/CUPS and Windows both live-verified — see §7 |
-| 4C | **MCP server** | 🟡 implemented, typechecked, stdio transport smoke-tested — not yet live-verified against a real account (see §7) |
+| 4C | **MCP server** | 🟡 implemented, typechecked, stdio smoke-tested, and read/download path live-verified — `print_*`/`download_shipment_labels` and real client registration still open (see §7) |
 | 4D | **teammate onboarding docs** | ⬜ not started |
 | 5 | **one sheet per SKU by default** (`--combine` opts back into today's behavior) | ✅ done, merged in PR #20 (2026-08-18), live-verified — see §7 |
 
@@ -373,8 +375,9 @@ Still open: setup docs need `nvm-windows` notes — it ignores `.nvmrc`.
 
 **4C — MCP server.** Implemented (2026-08-27, branch
 `claude/4c-file-layout-schema-w0at5g`), typechecked and build-verified;
-**not yet live-verified against a real Seller Central account** (see
-"What's not yet verified" below). stdio transport — the host (Claude Code,
+**the read/download path is live-verified against a real Seller Central
+account, the print path is not yet** (see "What's not yet verified"
+below). stdio transport — the host (Claude Code,
 Claude Desktop, Codex CLI) spawns the server as a child process and talks
 JSON-RPC over its stdin/stdout; no port, HTTPS, or tunnel involved. Tools
 only, no MCP resources/prompts — the inventory is far too large to dump as
@@ -478,20 +481,22 @@ optimization, not needed for a first cut.
 
 *Verified so far:* `npm run typecheck` and `npm run build` both pass clean.
 A manual stdio smoke test (spawn `dist/mcp/server.js`, send raw
-`initialize`/`tools/list`/`tools/call` JSON-RPC over its stdin) confirmed:
-all seven tools register with correct names/schemas, `tools/call` on
-`list_printers` returns valid `CallToolResult` JSON on stdout with a real
-`log.warn` diagnostic landing on stderr instead (no `lpstat` in this
-container, so an empty list back is the correct result), and nothing else
-appears on stdout at any point.
+`initialize`/`tools/list`/`tools/call` JSON-RPC over its stdin) confirmed
+all seven tools register with correct names/schemas and nothing but JSON-RPC
+appears on stdout. Beyond the smoke test, three tools were then run for
+real against the live account (2026-08-27, same hand-rolled JSON-RPC
+driver): `check_session` returned `signedIn: true`; `list_inventory` with
+no search text returned the real unfiltered grid (SKU/ASIN/title/available
+rows matching Seller Central); `download_labels` for one real SKU
+(`YJ-B42Y-0VY3`, qty 2) wrote a PDF that was opened and checked directly —
+correct FNSKU, correct title, 2 labels, 1 page.
 
 *What's not yet verified* — the actual point of the exercise, so this isn't
-done until it happens: every browser-driving tool (`check_session`,
-`list_inventory`, `download_labels`/`print_labels`,
-`download_shipment_labels`/`print_shipment_labels`) against a live account,
-and registration + a real tool call from both Claude Code and Codex CLI
-(not just a hand-rolled JSON-RPC probe). Same "verify the real artifact" bar
-as everything else in this repo — see §8.
+done until it happens: `print_labels`/`print_shipment_labels` actually
+spooling to a physical printer, `download_shipment_labels` against a live
+shipment, and registration + a real tool call from both Claude Code and
+Codex CLI's own config (not just a hand-rolled JSON-RPC probe). Same
+"verify the real artifact" bar as everything else in this repo — see §8.
 
 Registration once live-verified: `claude mcp add` for Claude Code, a block
 in `~/.codex/config.toml` for Codex, both pointing at the same compiled

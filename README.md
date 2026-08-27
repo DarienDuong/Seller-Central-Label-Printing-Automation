@@ -430,11 +430,15 @@ saving a PDF to `output/`) instead of a boolean it could get wrong.
 if not, run `npm run login` yourself — the server never signs in on your
 behalf.
 
-**Not yet live-verified against a real account** — typechecked, built, and
-smoke-tested over raw stdio JSON-RPC (`tools/list`/`tools/call` return
-correct schemas and results with a clean stdout), but the browser-driving
-tools haven't been run against Seller Central yet, and no client has
-registered it for a real call. See docs/PROJECT_CONTEXT.md §7 (4C).
+**Live-verified against a real account** (2026-08-27) for the read/download
+path: `check_session`, `list_inventory`, and a `download_labels` dry run all
+ran against Seller Central over raw stdio JSON-RPC and produced correct
+results — the downloaded PDF was opened and checked (right FNSKU, right
+title, right label count), not just "no error thrown". **Still
+unverified:** an actual `print_labels`/`print_shipment_labels` call that
+spools real paper, `download_shipment_labels`, and registration with an
+actual Claude Code/Codex client config (this was a hand-rolled JSON-RPC
+probe, not a client). See docs/PROJECT_CONTEXT.md §7 (4C).
 
 ## Notes
 
